@@ -1,0 +1,47 @@
+{"sec": "meta", "name": "run", "lang": "micropython_naive", "cpu_hz": 125000000, "frame_ms": 33, "seed": 12648430, "captured": "2026-09-30 00:20:31", "run_seconds": 2552.9, "complete": true}
+{"sec": "boot", "first_frame_ms": 1424, "name": "timing", "ready_ms": 3813}
+{"sec": "memory", "ram_total_bytes": 270336, "name": "static", "flash_image_bytes": 59151, "heap_total_bytes": 233728, "flash_total_bytes": 2097152, "program_ram_bytes": 54000}
+{"sec": "memory", "used_bytes": 54560, "name": "heap_boot", "free_bytes": 179168}
+{"sec": "touch", "count_mean_x100": 0, "name": "Q5", "count_min": 0, "count_sd_x100": 0, "count_max": 0, "n": 200, "avg_ns": 351515}
+{"sec": "touch", "count_mean_x100": 0, "name": "Q2", "count_min": 0, "count_sd_x100": 0, "count_max": 0, "n": 200, "avg_ns": 352605}
+{"sec": "touch", "count_mean_x100": 0, "name": "Q3", "count_min": 0, "count_sd_x100": 0, "count_max": 0, "n": 200, "avg_ns": 352050}
+{"sec": "touch", "count_mean_x100": 0, "name": "Q4", "count_min": 0, "count_sd_x100": 0, "count_max": 0, "n": 200, "avg_ns": 352535}
+{"sec": "touch", "count_mean_x100": 0, "name": "Q1", "count_min": 0, "count_sd_x100": 0, "count_max": 0, "n": 200, "avg_ns": 352310}
+{"sec": "touch", "count_mean_x100": 0, "name": "Q0", "count_min": 0, "count_sd_x100": 0, "count_max": 0, "n": 200, "avg_ns": 351945}
+{"sec": "touch", "name": "scan6", "min_us": 18059, "avg_ns": 18197050, "max_us": 26050, "n": 100}
+{"sec": "gfx", "n": 300, "name": "clear", "avg_ns": 913976}
+{"sec": "gfx", "n": 300, "name": "fill_screen", "avg_ns": 500305803}
+{"sec": "gfx", "n": 300, "name": "line", "avg_ns": 8508136}
+{"sec": "gfx", "n": 300, "name": "circle_r16", "avg_ns": 7205910}
+{"sec": "gfx", "n": 300, "name": "fill_circle_r16", "avg_ns": 63768920}
+{"sec": "gfx", "n": 300, "name": "fill_round_rect", "avg_ns": 73003803}
+{"sec": "gfx", "n": 300, "name": "fill_triangle", "avg_ns": 232216053}
+{"sec": "gfx", "n": 300, "name": "text_21_s1", "avg_ns": 28928276}
+{"sec": "gfx", "n": 300, "name": "text_10_s2", "avg_ns": 57057880}
+{"sec": "gfx", "n": 300, "name": "card", "avg_ns": 30338626}
+{"sec": "gfx", "n": 300, "name": "card_back", "avg_ns": 22369336}
+{"sec": "display", "name": "push", "min_us": 25796, "avg_ns": 25803470, "max_us": 25822, "n": 100}
+{"sec": "display", "name": "theory", "min_us": 23040, "payload_bytes": 1024, "i2c_hz": 400000}
+{"sec": "logic", "n": 2000, "name": "shuffle", "avg_ns": 13830123}
+{"sec": "logic", "checksum": 52393, "name": "shuffle_check"}
+{"sec": "logic", "n": 10000, "name": "bj_total", "avg_ns": 98214}
+{"sec": "logic", "checksum": 197600, "name": "bj_total_check"}
+{"sec": "logic", "n": 10000, "name": "eval5", "avg_ns": 1015827}
+{"sec": "logic", "checksum": 53502792, "name": "eval5_check"}
+{"sec": "logic", "n": 10000, "name": "best7", "avg_ns": 42025815}
+{"sec": "logic", "checksum": 1224999960, "name": "best7_check"}
+{"sec": "frame", "name": "input", "min_us": 18227, "avg_ns": 18634993, "max_us": 19212, "n": 1651}
+{"sec": "frame", "name": "update", "min_us": 167, "avg_ns": 423249, "max_us": 84766, "n": 1651}
+{"sec": "frame", "name": "draw", "min_us": 40608, "avg_ns": 336086227, "max_us": 724168, "n": 1651}
+{"sec": "frame", "name": "push", "min_us": 25872, "avg_ns": 25976913, "max_us": 34229, "n": 1651}
+{"sec": "frame", "name": "total", "min_us": 98155, "avg_ns": 381121383, "max_us": 769184, "n": 1651}
+{"sec": "draw_screen", "name": "menu", "min_us": 117556, "avg_ns": 202957503, "max_us": 328202, "n": 165}
+{"sec": "draw_screen", "name": "roulette", "min_us": 179314, "avg_ns": 225601385, "max_us": 468335, "n": 358}
+{"sec": "draw_screen", "name": "blackjack", "min_us": 40608, "avg_ns": 316755444, "max_us": 509533, "n": 511}
+{"sec": "draw_screen", "name": "holdem", "min_us": 93342, "avg_ns": 451803962, "max_us": 724168, "n": 617}
+{"sec": "frame", "name": "percentiles", "p99_us": 766867, "p50_us": 328594, "unlocked_fps_x100": 262, "frames": 1651}
+{"sec": "latency", "name": "input_to_display", "min_us": 98155, "avg_ns": 261156976, "max_us": 497236, "n": 43}
+{"sec": "parity", "name": "playthrough", "rng": 2158988489, "frame_crc32": 810939409, "bank": 790}
+{"frames": 3302, "leaked_bytes": 0, "frame_max_us": 727551, "max_heap_delta": 78944, "sec": "leaks", "alloc_bytes_per_frame": 10351, "name": "soak", "frame_p50_us": 286895, "heap_used_after": 57792, "gc_runs": 320, "frames_with_heap_change": 3302, "heap_used_before": 57792}
+{"sec": "leaks", "free_bytes": 175120, "name": "fragmentation", "largest_block_after": 19168, "largest_block_before": 28960}
+{"sec": "memory", "stack_used_bytes": 1404, "name": "stack"}

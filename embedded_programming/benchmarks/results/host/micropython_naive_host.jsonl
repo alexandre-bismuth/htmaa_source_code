@@ -1,0 +1,46 @@
+{"sec": "boot", "first_frame_ms": 1790735589611, "name": "timing", "ready_ms": 1790735590470}
+{"sec": "memory", "ram_total_bytes": 270336, "name": "static", "heap_total_bytes": 16582784, "flash_image_bytes": 59151, "program_ram_bytes": 73888, "flash_total_bytes": 2097152}
+{"sec": "memory", "used_bytes": 74624, "name": "heap_boot", "free_bytes": 16508160}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q5", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 34315}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q2", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 34100}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q3", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 33985}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q4", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 34010}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q1", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 33640}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q0", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 33590}
+{"name": "scan6", "avg_ns": 1617920, "sec": "touch", "max_us": 1651, "min_us": 1602, "n": 100}
+{"sec": "gfx", "n": 300, "name": "clear", "avg_ns": 2210}
+{"sec": "gfx", "n": 300, "name": "fill_screen", "avg_ns": 1049203}
+{"sec": "gfx", "n": 300, "name": "line", "avg_ns": 19356}
+{"sec": "gfx", "n": 300, "name": "circle_r16", "avg_ns": 20086}
+{"sec": "gfx", "n": 300, "name": "fill_circle_r16", "avg_ns": 352033}
+{"sec": "gfx", "n": 300, "name": "fill_round_rect", "avg_ns": 157076}
+{"sec": "gfx", "n": 300, "name": "fill_triangle", "avg_ns": 500116}
+{"sec": "gfx", "n": 300, "name": "text_21_s1", "avg_ns": 70110}
+{"sec": "gfx", "n": 300, "name": "text_10_s2", "avg_ns": 152693}
+{"sec": "gfx", "n": 300, "name": "card", "avg_ns": 70073}
+{"sec": "gfx", "n": 300, "name": "card_back", "avg_ns": 52233}
+{"name": "push", "avg_ns": 160, "sec": "display", "max_us": 1, "min_us": 0, "n": 100}
+{"name": "theory", "sec": "display", "i2c_hz": 400000, "min_us": 23040, "payload_bytes": 1024}
+{"sec": "logic", "n": 2000, "name": "shuffle", "avg_ns": 19095}
+{"sec": "logic", "checksum": 52393, "name": "shuffle_check"}
+{"sec": "logic", "n": 10000, "name": "bj_total", "avg_ns": 295}
+{"sec": "logic", "checksum": 197600, "name": "bj_total_check"}
+{"sec": "logic", "n": 10000, "name": "eval5", "avg_ns": 2886}
+{"sec": "logic", "checksum": 53502792, "name": "eval5_check"}
+{"sec": "logic", "n": 10000, "name": "best7", "avg_ns": 144212}
+{"sec": "logic", "checksum": 1224999960, "name": "best7_check"}
+{"name": "input", "avg_ns": 1655915, "sec": "frame", "max_us": 1800, "min_us": 1614, "n": 1651}
+{"name": "update", "avg_ns": 1416, "sec": "frame", "max_us": 273, "min_us": 0, "n": 1651}
+{"name": "draw", "avg_ns": 759803, "sec": "frame", "max_us": 1915, "min_us": 98, "n": 1651}
+{"name": "push", "avg_ns": 231, "sec": "frame", "max_us": 1, "min_us": 0, "n": 1651}
+{"name": "total", "avg_ns": 2417366, "sec": "frame", "max_us": 3636, "min_us": 1760, "n": 1651}
+{"name": "menu", "avg_ns": 438218, "sec": "draw_screen", "max_us": 707, "min_us": 256, "n": 165}
+{"name": "roulette", "avg_ns": 514455, "sec": "draw_screen", "max_us": 1067, "min_us": 412, "n": 358}
+{"name": "blackjack", "avg_ns": 691861, "sec": "draw_screen", "max_us": 1129, "min_us": 98, "n": 511}
+{"name": "holdem", "avg_ns": 1044429, "sec": "draw_screen", "max_us": 1915, "min_us": 213, "n": 617}
+{"p99_us": 3376, "name": "percentiles", "sec": "frame", "p50_us": 2253, "unlocked_fps_x100": 41367, "frames": 1651}
+{"name": "input_to_display", "avg_ns": 2149000, "sec": "latency", "max_us": 2856, "min_us": 1772, "n": 43}
+{"name": "playthrough", "bank": 790, "sec": "parity", "rng": 2158988489, "frame_crc32": 491742382}
+{"gc_runs": 6, "max_heap_delta": 235872, "frame_max_us": 3706, "heap_used_before": 80960, "frames": 3302, "frame_p50_us": 892, "name": "soak", "alloc_bytes_per_frame": 33664, "sec": "leaks", "leaked_bytes": 0, "heap_used_after": 80960, "frames_with_heap_change": 3302}
+{"name": "fragmentation", "largest_block_before": 5195648, "sec": "leaks", "free_bytes": 16500768, "largest_block_after": 13330560}
+{"sec": "memory", "stack_used_bytes": 3264, "name": "stack"}

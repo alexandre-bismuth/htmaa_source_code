@@ -1,0 +1,46 @@
+{"sec": "boot", "first_frame_ms": 1790735602457, "name": "timing", "ready_ms": 1790735603263}
+{"sec": "memory", "ram_total_bytes": 270336, "name": "static", "heap_total_bytes": 16582784, "flash_image_bytes": 66906, "program_ram_bytes": 130976, "flash_total_bytes": 2097152}
+{"sec": "memory", "used_bytes": 131712, "name": "heap_boot", "free_bytes": 16451072}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q5", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 690}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q2", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 650}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q3", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 635}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q4", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 650}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q1", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 625}
+{"count_sd_x100": 0, "sec": "touch", "name": "Q0", "count_mean_x100": 0, "n": 200, "count_min": 0, "count_max": 0, "avg_ns": 615}
+{"name": "scan6", "avg_ns": 22820, "sec": "touch", "max_us": 59, "min_us": 19, "n": 100}
+{"sec": "gfx", "n": 300, "name": "clear", "avg_ns": 8560}
+{"sec": "gfx", "n": 300, "name": "fill_screen", "avg_ns": 6700}
+{"sec": "gfx", "n": 300, "name": "line", "avg_ns": 51200}
+{"sec": "gfx", "n": 300, "name": "circle_r16", "avg_ns": 59830}
+{"sec": "gfx", "n": 300, "name": "fill_circle_r16", "avg_ns": 5450}
+{"sec": "gfx", "n": 300, "name": "fill_round_rect", "avg_ns": 2686}
+{"sec": "gfx", "n": 300, "name": "fill_triangle", "avg_ns": 39083}
+{"sec": "gfx", "n": 300, "name": "text_21_s1", "avg_ns": 4750}
+{"sec": "gfx", "n": 300, "name": "text_10_s2", "avg_ns": 14026}
+{"sec": "gfx", "n": 300, "name": "card", "avg_ns": 1096}
+{"sec": "gfx", "n": 300, "name": "card_back", "avg_ns": 956}
+{"name": "push", "avg_ns": 330, "sec": "display", "max_us": 13, "min_us": 0, "n": 100}
+{"name": "theory", "sec": "display", "i2c_hz": 400000, "min_us": 23040, "payload_bytes": 1024}
+{"sec": "logic", "n": 2000, "name": "shuffle", "avg_ns": 17783}
+{"sec": "logic", "checksum": 52393, "name": "shuffle_check"}
+{"sec": "logic", "n": 10000, "name": "bj_total", "avg_ns": 428}
+{"sec": "logic", "checksum": 197600, "name": "bj_total_check"}
+{"sec": "logic", "n": 10000, "name": "eval5", "avg_ns": 6655}
+{"sec": "logic", "checksum": 53502792, "name": "eval5_check"}
+{"sec": "logic", "n": 10000, "name": "best7", "avg_ns": 158680}
+{"sec": "logic", "checksum": 1224999960, "name": "best7_check"}
+{"name": "input", "avg_ns": 6714, "sec": "frame", "max_us": 12, "min_us": 5, "n": 1651}
+{"name": "update", "avg_ns": 1362, "sec": "frame", "max_us": 340, "min_us": 0, "n": 1651}
+{"name": "draw", "avg_ns": 117938, "sec": "frame", "max_us": 437, "min_us": 11, "n": 1651}
+{"name": "push", "avg_ns": 182, "sec": "frame", "max_us": 1, "min_us": 0, "n": 1651}
+{"name": "total", "avg_ns": 126197, "sec": "frame", "max_us": 531, "min_us": 23, "n": 1651}
+{"name": "menu", "avg_ns": 86345, "sec": "draw_screen", "max_us": 147, "min_us": 29, "n": 165}
+{"name": "roulette", "avg_ns": 35667, "sec": "draw_screen", "max_us": 57, "min_us": 23, "n": 358}
+{"name": "blackjack", "avg_ns": 37958, "sec": "draw_screen", "max_us": 53, "min_us": 11, "n": 511}
+{"name": "holdem", "avg_ns": 240363, "sec": "draw_screen", "max_us": 437, "min_us": 21, "n": 617}
+{"p99_us": 424, "name": "percentiles", "sec": "frame", "p50_us": 57, "unlocked_fps_x100": 792409, "frames": 1651}
+{"name": "input_to_display", "avg_ns": 93139, "sec": "latency", "max_us": 531, "min_us": 29, "n": 43}
+{"name": "playthrough", "bank": 790, "sec": "parity", "rng": 2158988489, "frame_crc32": 908070050}
+{"gc_runs": 0, "max_heap_delta": 1504, "frame_max_us": 571, "heap_used_before": 137632, "frames": 3302, "frame_p50_us": 32, "name": "soak", "alloc_bytes_per_frame": 5, "sec": "leaks", "leaked_bytes": 0, "heap_used_after": 137632, "frames_with_heap_change": 38}
+{"name": "fragmentation", "largest_block_before": 16244064, "sec": "leaks", "free_bytes": 16444096, "largest_block_after": 16244224}
+{"sec": "memory", "stack_used_bytes": 3264, "name": "stack"}

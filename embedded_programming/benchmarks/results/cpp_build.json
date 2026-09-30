@@ -1,0 +1,54 @@
+{
+ "lang": "cpp",
+ "toolchain": "arduino-pico 6.1.1, arm-none-eabi-gcc (pqt-gcc 5.0.0), -O2, 125 MHz",
+ "game": {
+  "sections": {
+   ".boot2": 256,
+   ".ota": 10032,
+   ".partition": 2000,
+   ".text": 82404,
+   ".rodata": 6752,
+   ".ram_vector_table": 192,
+   ".data": 5160,
+   ".tdata": 0,
+   ".tbss": 0,
+   ".bss": 5608,
+   ".uninitialized_data": 32,
+   ".heap": 249824,
+   ".scratch_x": 0,
+   ".scratch_y": 0,
+   ".stack1_dummy": 2048,
+   ".stack_dummy": 2048
+  },
+  "flash_bytes": 106604,
+  "static_ram_bytes": 14864,
+  "arduino_cli_reported_flash_bytes": 89412
+ },
+ "benchmark_build": {
+  "sections": {
+   ".boot2": 256,
+   ".ota": 10032,
+   ".partition": 2000,
+   ".text": 91988,
+   ".rodata": 8792,
+   ".ram_vector_table": 192,
+   ".data": 5160,
+   ".tdata": 0,
+   ".tbss": 0,
+   ".bss": 15552,
+   ".uninitialized_data": 32,
+   ".heap": 241208,
+   ".scratch_x": 0,
+   ".scratch_y": 0,
+   ".stack1_dummy": 2048,
+   ".stack_dummy": 2048
+  },
+  "flash_bytes": 118228,
+  "static_ram_bytes": 24808,
+  "arduino_cli_reported_flash_bytes": 101036
+ },
+ "note": ".text includes the Arduino core, TinyUSB and the Adafruit libraries; .heap (rest of RAM) is available to malloc; stack_dummy = core-0 stack reserve; flash_bytes = boot2 + ota + partition + text + rodata + data image",
+ "flash_total_bytes": 2097152,
+ "sram_total_bytes": 270336,
+ "ram_accounting": "RAM sections (.data, .bss, .uninitialized_data, .ram_vector_table, .heap, two 2 KB stacks) do not add up to 270,336 B: the 8 KB SCRATCH_X/Y banks hold only the two 2 KB stack reserves (4,096 B unused), and the rest of the gap is section alignment padding."
+}

@@ -1,0 +1,57 @@
+{
+ "cpp": {
+  "heap_calls_in_game_code": [],
+  "heap_calls_in_benchmark_code": [
+   "cpp_arduino_ide/qpad_casino/bench.ino:5: #include <malloc.h>",
+   "cpp_arduino_ide/qpad_casino/bench.ino:111: void* p = malloc(mid);",
+   "cpp_arduino_ide/qpad_casino/bench.ino:112: if (p) { free(p); lo = mid; } else hi = mid - 1;"
+  ],
+  "library_allocations": [
+   "Adafruit_SSD1306::begin() mallocs the 1024-byte frame buffer once and never frees it (lives as long as the program)",
+   "arduino-pico core / TinyUSB / Serial allocate their buffers at boot"
+  ],
+  "stack_buffers": "all text formatting uses sprintf/snprintf into stack buffers (char b[12..24])"
+ },
+ "rust": {
+  "allocator": "none: no #[global_allocator], no `alloc` crate",
+  "alloc_uses": [
+   "rust/qpad_casino/src/tests.rs:23: let cards: Vec<u8> = names.iter().map(|n| card(n)).collect();",
+   "rust/qpad_casino/src/tests.rs:69: let total = |names: &[&str]| bj_total(&names.iter().map(|n| card(n)).collect::<Vec<_>>());"
+  ],
+  "fixed_capacity_types": [
+   "rust/qpad_casino/src/ui.rs:6: use heapless::String;",
+   "rust/qpad_casino/src/ui.rs:151: pub type Hand = heapless::Vec<Slot, 12>;",
+   "rust/qpad_casino/src/bench.rs:7: use heapless::String;"
+  ],
+  "unsafe_blocks": 15
+ },
+ "micropython_naive": {
+  "allocates_every_frame": [
+   "f-strings for every label ($bank, bet bar, money)",
+   "floats (boxed on the RP2040 port) in easing and icon trig",
+   "list comprehensions in best_hand (up to 128 per 7-card hand) and up_cards/all_cards",
+   "tuples of points in circle()",
+   "a new Card object per card on every shuffle"
+  ],
+  "per_frame_allocs_measured_on_host": "see results/host/micropython_naive_host.jsonl leaks/soak alloc_bytes_per_frame",
+  "drawing": "every primitive is Adafruit_GFX translated line by line, one fb.pixel() call per pixel (fills are loops of vlines of pixels)"
+ },
+ "micropython": {
+  "allocates_every_frame": [
+   "nothing on a normal frame except rare cache misses"
+  ],
+  "allocates_per_round": [
+   "Slot objects when cards are dealt",
+   "the result message and a few formatted strings (cached afterwards)"
+  ],
+  "techniques": [
+   "bytes text (iterating yields ints, no 1-char strings)",
+   "cached $bank / bet-bar / money strings",
+   "preallocated bytearrays for hands",
+   "viper code writes the frame buffer directly",
+   "sprites (2 blits) for cards, pockets, big menu cards",
+   "glyph FrameBuffers built on first use (lazily), then kept",
+   "framebuf's C routines (fill_rect, hline, vline, rect, blit) instead of per-pixel Python loops wherever their pixels match Adafruit's (fills, rectangles, glyphs, sprites); Adafruit's own algorithms kept for lines/circles/triangles (in viper)"
+  ]
+ }
+}
