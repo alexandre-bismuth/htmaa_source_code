@@ -1,0 +1,36 @@
+{
+ "note": "Host-side verification (2026-09-29), then one device run of every program on the XIAO RP2040 (2026-09-29/30).",
+ "cpp": {
+  "logic_tests": "2127/2127 checks (tests/logic_test.cpp, incl. 500 vectors from the JS reference evaluator)",
+  "device_build": "arduino-cli compile, 125 MHz, -O2, --warnings all: 0 warnings (game and benchmark builds)",
+  "host_render": "sketch compiled on the Mac against stubbed hardware (tests/host/run.sh); frames inspected as PNG",
+  "reference": "this run defines benchmarks/reference.json (bank 790, rng 2158988489, frame CRC 908070050, 1651 frames)"
+ },
+ "micropython_naive": {
+  "host_tests": "2309/2309 checks on the MicroPython 1.29 unix port at -X heapsize=1M (tests/run_tests.py)",
+  "parity": "bank, RNG, frame count and all logic checksums identical to C++; 1290/1651 frames bit-identical (the rest differ by 1-pixel float rounding in animations, by design)",
+  "device_compile": "all modules compile with mpy-cross -march=armv6m",
+  "smoke": "main.py runs in game and benchmark mode on the host",
+  "heap": "game mode and the whole benchmark complete in a 160 KB heap on the 64-bit unix port (smallest size tried)"
+ },
+ "micropython": {
+  "host_tests": "2310/2310 checks at -X heapsize=1M (viper/native decorators stripped for the arm64 unix port, which has no native emitter)",
+  "parity": "1651/1651 frames bit-identical to C++; bank, RNG and checksums identical",
+  "device_compile": "all modules incl. viper code compile with mpy-cross -march=armv6m (44,348 bytes of .mpy)",
+  "smoke": "main.py runs in game and benchmark mode on the host",
+  "heap": "the whole benchmark completes in a 176 KB heap on the 64-bit unix port (fails at 160 KB); game mode fits in 160 KB"
+ },
+ "rust": {
+  "host_tests": "13/13 cargo tests (rules vs the same 500 vectors, flows, touch logic, logic checksums, playthrough)",
+  "parity": "1651/1651 frames bit-identical to C++; bank, RNG and checksums identical",
+  "device_build": "cargo build --release for thumbv6m-none-eabi: 0 warnings, 0 clippy warnings; touch loop placed in RAM (0x2003FAD0)",
+  "host_proxy_checksums": "the host-proxy run reproduces all four logic checksums of reference.json"
+ },
+ "not_yet_verified": "Touch on real pads was only measured untouched (idle counts); no one pressed pads during the benchmark runs.",
+ "device_runs": {
+  "cpp": "complete; bank, RNG, all four checksums and the frame CRC over 1651 frames match reference.json",
+  "micropython_naive": "complete (a first capture was lost to a killed capture process during its soak; rerun in full); bank, RNG and checksums match; frame CRC differs by design (float animation math, float32 on the device)",
+  "micropython": "complete; bank, RNG, checksums and the frame CRC match reference.json (bit-identical to C++ on the device)",
+  "rust": "complete; bank, RNG, checksums and the frame CRC match reference.json"
+ }
+}

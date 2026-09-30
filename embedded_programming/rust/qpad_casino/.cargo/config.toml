@@ -1,0 +1,15 @@
+# Seeed XIAO RP2040: RP2040 = dual Cortex-M0+ -> thumbv6m-none-eabi
+[build]
+target = "thumbv6m-none-eabi"
+
+[target.thumbv6m-none-eabi]
+# `cargo run` flashes over USB. Put the XIAO in bootloader mode first:
+# hold BOOT (B), plug in / tap RESET (R), release BOOT -> "RPI-RP2" drive appears.
+runner = "picotool load -u -v -x -t elf"
+# Probe alternative (SWD debug probe): runner = "probe-rs run --chip RP2040"
+linker = "flip-link"
+rustflags = [
+  "-C", "link-arg=--nmagic",
+  "-C", "link-arg=-Tlink.x",
+  "-C", "target-cpu=cortex-m0plus",
+]

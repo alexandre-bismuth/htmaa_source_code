@@ -1,0 +1,3 @@
+*.uf2
+# Firmware is a binary: commit Cargo.lock (the root .gitignore ignores it) so builds use the same crate versions.
+!Cargo.lock

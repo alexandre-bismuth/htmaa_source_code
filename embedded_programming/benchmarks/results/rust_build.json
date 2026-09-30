@@ -1,0 +1,33 @@
+{
+ "lang": "rust",
+ "toolchain": "rustc stable (thumbv6m-none-eabi), opt-level=2, lto, codegen-units=1, rp2040-hal 0.10, flip-link",
+ "game": {
+  "sections": {
+   ".vector_table": 192,
+   ".boot2": 256,
+   ".text": 54832,
+   ".rodata": 5468,
+   ".data": 1088,
+   ".bss": 236,
+   ".uninit": 0
+  },
+  "flash_bytes": 61836,
+  "static_ram_bytes": 1324
+ },
+ "benchmark_build": {
+  "sections": {
+   ".vector_table": 192,
+   ".boot2": 256,
+   ".text": 82532,
+   ".rodata": 7768,
+   ".data": 1088,
+   ".bss": 8444,
+   ".uninit": 0
+  },
+  "flash_bytes": 91836,
+  "static_ram_bytes": 9532
+ },
+ "note": "no heap allocator; the stack uses the RAM below .data (flip-link)",
+ "flash_total_bytes": 2097152,
+ "sram_total_bytes": 270336
+}

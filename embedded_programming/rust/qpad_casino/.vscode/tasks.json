@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build (release)",
+      "type": "shell",
+      "command": "cargo build --release",
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Flash XIAO RP2040",
+      "detail": "Hold BOOT, tap RESET (or plug in), release BOOT, then run",
+      "type": "shell",
+      "command": "cargo run --release",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Test game logic on host",
+      "type": "shell",
+      "command": "./test_host.sh",
+      "group": "test",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Check XIAO in bootloader mode",
+      "type": "shell",
+      "command": "picotool info -a",
+      "problemMatcher": []
+    },
+    {
+      "label": "Export UF2 (drag-and-drop onto RPI-RP2)",
+      "type": "shell",
+      "command": "cargo build --release && picotool uf2 convert target/thumbv6m-none-eabi/release/qpad-casino -t elf qpad-casino.uf2 --family rp2040",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Size",
+      "type": "shell",
+      "command": "cargo size --release -- -A",
+      "problemMatcher": []
+    },
+    {
+      "label": "Clean",
+      "type": "shell",
+      "command": "cargo clean",
+      "problemMatcher": []
+    }
+  ]
+}

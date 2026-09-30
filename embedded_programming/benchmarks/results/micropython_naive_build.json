@@ -1,0 +1,39 @@
+{
+ "lang": "micropython_naive",
+ "toolchain": "MicroPython v1.29.0 (SEEED_XIAO_RP2040 firmware), mpy-cross 1.29 -march=armv6m",
+ "deployed_as": ".py source, compiled to bytecode on the board at import",
+ "firmware_flash_bytes": 338688,
+ "source_py_bytes": 59151,
+ "compiled_mpy_bytes": 29232,
+ "py_files": {
+  "bench.py": 12979,
+  "blackjack.py": 4601,
+  "cards.py": 5781,
+  "casino.py": 1551,
+  "font.py": 4150,
+  "gfx.py": 7490,
+  "main.py": 1426,
+  "menu.py": 3562,
+  "poker.py": 5129,
+  "roulette.py": 3117,
+  "touch.py": 3205,
+  "ui.py": 6160
+ },
+ "mpy_files": {
+  "bench.mpy": 6726,
+  "blackjack.mpy": 2143,
+  "cards.mpy": 2504,
+  "casino.mpy": 948,
+  "font.mpy": 2622,
+  "gfx.mpy": 2853,
+  "main.mpy": 995,
+  "menu.mpy": 1843,
+  "poker.mpy": 2430,
+  "roulette.mpy": 1672,
+  "touch.mpy": 1499,
+  "ui.mpy": 2997
+ },
+ "flash_total_bytes": 2097152,
+ "sram_total_bytes": 270336,
+ "host_min_heap_game_bench": "game mode and the whole benchmark complete with a 160 KB heap on the 64-bit unix port (smallest size tried; the true minimum may be lower)"
+}

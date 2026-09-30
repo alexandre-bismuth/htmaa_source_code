@@ -1,0 +1,11 @@
+{
+ "source": "C++ sketch run on the host: cpp_arduino_ide/qpad_casino/tests/host/run.sh",
+ "shuffle_check": 52393,
+ "bj_total_check": 197600,
+ "eval5_check": 53502792,
+ "best7_check": 1224999960,
+ "frames": 1651,
+ "bank": 790,
+ "rng": 2158988489,
+ "frame_crc32": 908070050
+}
