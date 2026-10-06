@@ -1,0 +1,87 @@
+{
+  "_comment": "World frame for the whole game. NEVER change origin after meshes are imported: every region is generated into this single frame so expansion is just adding a region.",
+  "frame": {
+    "origin_lat": 42.367,
+    "origin_lon": -71.1045,
+    "origin_height_navd88_m": 0.0,
+    "horizontal": "local ENU tangent plane at origin (WGS84), matches CesiumGeoreference",
+    "vertical": "NAVD88 orthometric height in meters (curvature ignored; <0.4 m drop at 2 km)",
+    "ue_axes": "UE X = East, UE Y = South (-North), UE Z = Up, centimeters (same as Cesium for Unreal)"
+  },
+  "source_units": {
+    "_comment": "Cambridge GIS elevations/heights are US survey feet (verified: MIT Bldg 54 TOP_GL = 327.4).",
+    "height_to_m": 0.3048006096
+  },
+  "regions": {
+    "mit_core": {
+      "_comment": "Stage B (2026-10-05): Harvard + MIT = the City of Cambridge between the Charles and the Somerville line (wall 100 m inside it), from just west of Harvard Sq / the Common / the Radcliffe Quad to Kendall. Stage A was bbox [-71.1085, 42.354, -71.08, 42.37]. Region id kept as mit_core. See wip_notes2/STAGE_B_PLAN.md",
+      "bbox_lonlat": [-71.129, 42.3505, -71.08, 42.3842],
+      "playable": {
+        "_comment": "region = bbox ∩ city.buffer(city_buffer_m) − (city land boundary, not in the river).buffer(land_boundary_inset_m); the part containing the spawn (geo.region_polygon)",
+        "clip_to_city": true,
+        "city_buffer_m": 30,
+        "land_boundary_inset_m": 100
+      },
+      "spawn": {
+        "_comment": "Mass Ave northbound, just north of Memorial Dr (77 Mass Ave side)",
+        "street": "Massachusetts Ave",
+        "start_near_en": [985.9, -1091.5],
+        "dist_m": 70,
+        "lane_offset_m": 4.0
+      },
+      "context_bbox_lonlat": [-71.137, 42.34, -71.048, 42.388],
+      "camb3d_tiles": ["D-2", "D-3", "E-2", "E-3", "E-4", "F-2", "F-3", "F-4", "G-3", "G-4", "H-3"],
+      "boston_tiles": ["E-4", "F-4", "G-4", "G-5", "H-4", "I-4"],
+      "ortho": {"play": {"z": 19, "size_px": 16384}, "ctx": {"z": 18, "size_px": 8192}},
+      "ground_mask_px": 8192,
+      "buildings": {
+        "_comment": "build_meshes.py rules; regions without this block keep the Stage A behaviour",
+        "skip_poi": ["bridge", "overpass", "tunnel"],
+        "assessor_styles": true,
+        "harvard_styles": true,
+        "ctx_city_ground": "outside_city",
+        "drop_road_walls_m2": 5.0,
+        "drop_road_walls_skip_bbox_lonlat": [-71.1085, 42.354, -71.08, 42.37]
+      }
+    }
+  },
+  "_tiles_comment": "Defaults for regions without their own camb3d_tiles / boston_tiles (geo.region_cfg)",
+  "camb3d_tiles": ["D-2", "D-3", "E-2", "E-3", "E-4", "F-2", "F-3", "F-4", "G-3", "G-4", "H-3"],
+  "layers": [
+    "BASEMAP_Roads",
+    "BASEMAP_Curbs",
+    "BASEMAP_Sidewalks",
+    "BASEMAP_Buildings",
+    "BASEMAP_Bridges",
+    "BASEMAP_Driveways",
+    "BASEMAP_Plazas",
+    "BASEMAP_Walls",
+    "BASEMAP_Vegetation",
+    "TRANS_Centerlines",
+    "TRANS_Intersections",
+    "HYDRO_WaterBodies",
+    "BASEMAP_ParkingLots",
+    "BASEMAP_PublicFootpaths",
+    "BASEMAP_PrivateWalkways",
+    "BASEMAP_ImperviousOther",
+    "BASEMAP_RooftopMechanicals",
+    "ENVIRONMENTAL_StreetTrees",
+    "INFRA_StreetLights",
+    "INFRA_Hydrants",
+    "INFRA_ParkBenches",
+    "DPW_LitterBarrels",
+    "RECREATION_BikeRacks",
+    "TRANS_BusShelters",
+    "TRAFFIC_Signals",
+    "TRAFFIC_MeteredParkingSpaces",
+    "INFRA_StreetLightsNotCityOwned",
+    "INFRA_UtilityPoles",
+    "BASEMAP_Fences",
+    "TRAFFIC_PavementMarkings"
+  ],
+  "boston": {
+    "_comment": "City of Boston Planning Department 3D Smart Model (PDDL per Analyze Boston; credit the City). Same MA State Plane grid and offset as the Cambridge tiles.",
+    "url": "https://maps.bostonplans.org/3d/Bos3d_BldgModels_20260624_OBJ/BOS_{tile}_BldgModels_OBJ.zip",
+    "tiles": ["E-4", "F-4", "G-4", "G-5", "H-4", "I-4"]
+  }
+}

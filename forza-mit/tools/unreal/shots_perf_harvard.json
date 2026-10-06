@@ -1,0 +1,195 @@
+[
+ {
+  "name": "harvard_sq_street",
+  "loc": [
+   -116200,
+   -70600,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -127,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "yard_tercentenary",
+  "loc": [
+   -97200,
+   -80000,
+   170
+  ],
+  "rot": [
+   -3.0,
+   90,
+   0
+  ],
+  "fov": 75,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "cambridge_common",
+  "loc": [
+   -131800,
+   -108900,
+   170
+  ],
+  "rot": [
+   -3.0,
+   60,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "yard_north",
+  "loc": [
+   -100500,
+   -82000,
+   170
+  ],
+  "rot": [
+   -3,
+   -80,
+   0
+  ],
+  "fov": 75,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150",
+  "ui": false
+ },
+ {
+  "name": "memorial_dr_harvard",
+  "loc": [
+   -105900,
+   -24500,
+   160
+  ],
+  "rot": [
+   -3.0,
+   46,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "river_houses_low_aerial",
+  "loc": [
+   -105000,
+   -12000,
+   6000
+  ],
+  "rot": [
+   -15,
+   -80,
+   0
+  ],
+  "fov": 65,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "law_divinity",
+  "loc": [
+   -127000,
+   -144300,
+   170
+  ],
+  "rot": [
+   -3.0,
+   -85,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "radcliffe_quad",
+  "loc": [
+   -155100,
+   -120700,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -100,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "somerville_edge",
+  "loc": [
+   -40000,
+   -118200,
+   170
+  ],
+  "rot": [
+   -3.0,
+   -16,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "underpass_check",
+  "loc": [
+   -92300,
+   -95400,
+   200
+  ],
+  "rot": [
+   -3.0,
+   -165,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "longfellow_walls_check",
+  "loc": [
+   176000,
+   68400,
+   160
+  ],
+  "rot": [
+   -3.0,
+   0,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ },
+ {
+  "name": "bu_bridge_interchange",
+  "loc": [
+   -43000,
+   149000,
+   200
+  ],
+  "rot": [
+   -3.0,
+   -142,
+   0
+  ],
+  "fov": 75,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 150"
+ }
+]

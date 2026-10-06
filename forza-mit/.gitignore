@@ -1,0 +1,53 @@
+# Unreal Engine
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+*.xcworkspace
+*.xcodeproj
+.vs/
+.vscode/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# Python tooling
+.venv/
+__pycache__/
+*.pyc
+
+# Raw downloaded GIS data is reproducible (see tools/mapgen/README.md)
+data/raw/
+# Generated pipeline outputs
+data/processed/
+
+.DS_Store
+
+# Heavy binary content stays local (no Git LFS). Everything here is reproducible:
+#   template assets -> tools/unreal/bootstrap_content.sh
+#   map meshes, materials, textures, levels -> tools/mapgen + tools/unreal scripts
+CambridgeRacer/Content/
+*.uasset
+*.umap
+*.glb
+*.fbx
+*.obj
+*.zip
+*.jp2
+*.tif
+*.tiff
+*.exr
+*.png
+*.jpg
+*.jpeg
+*.tga
+*.wav
+*.pdf
+
+# Claude Code session locks
+.claude/*.lock
+
+# Website progress media are the one place images/video ARE tracked (curated, small)
+!docs/figures/*.jpg
+!docs/figures/*.mp4
+!docs/figures/*.mp3
+wip_notes2/

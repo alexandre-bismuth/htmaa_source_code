@@ -1,0 +1,7 @@
+[
+  {"name": "chase_minimap", "loc": [0, 0, 0], "rot": [0, 0, 0], "settle": 5},
+  {"name": "chase_minimap_gps", "loc": [0, 0, 0], "rot": [0, 0, 0], "exec": "cr.Map.NavigateToEvent 5", "settle": 5},
+  {"name": "chase_fullmap", "loc": [0, 0, 0], "rot": [0, 0, 0], "exec": "cr.Map.Toggle 1", "settle": 3},
+  {"name": "chase_fullmap_event", "loc": [0, 0, 0], "rot": [0, 0, 0], "exec": "cr.Map.CursorToEvent 0 1.6", "settle": 3},
+  {"name": "chase_fullmap_closed", "loc": [0, 0, 0], "rot": [0, 0, 0], "exec": "cr.Map.Toggle 0", "settle": 3}
+]

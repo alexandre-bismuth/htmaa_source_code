@@ -1,0 +1,14 @@
+[project]
+name = "mapgen"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "mapbox-earcut>=2.1.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+    "pyproj>=3.8.0",
+    "scipy>=1.18.1",
+    "shapely>=2.1.2",
+    "trimesh>=5.1.0",
+]

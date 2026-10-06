@@ -1,0 +1,119 @@
+[
+ {
+  "name": "chase",
+  "frame_ms": 26.265,
+  "fps": 38.1,
+  "game_ms": 1.82,
+  "render_ms": 26.255,
+  "gpu_ms": 25.295,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "car_side",
+  "frame_ms": 21.48,
+  "fps": 46.55,
+  "game_ms": 2.5,
+  "render_ms": 0.0,
+  "gpu_ms": 20.475,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "car_front34",
+  "frame_ms": 25.2,
+  "fps": 39.7,
+  "game_ms": 2.76,
+  "render_ms": 0.0,
+  "gpu_ms": 24.21,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "car_driver",
+  "frame_ms": 20.855,
+  "fps": 48.0,
+  "game_ms": 2.37,
+  "render_ms": 0.0,
+  "gpu_ms": 20.155,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "massave_street",
+  "frame_ms": 25.425,
+  "fps": 39.35,
+  "game_ms": 2.84,
+  "render_ms": 0.0,
+  "gpu_ms": 24.35,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "tree_close",
+  "frame_ms": 21.29,
+  "fps": 47.0,
+  "game_ms": 2.64,
+  "render_ms": 0.0,
+  "gpu_ms": 21.075,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "killian_court",
+  "frame_ms": 25.595,
+  "fps": 39.1,
+  "game_ms": 2.9,
+  "render_ms": 0.0,
+  "gpu_ms": 25.4,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "cambridgeport_trees",
+  "frame_ms": 22.49,
+  "fps": 44.5,
+  "game_ms": 2.825,
+  "render_ms": 0.0,
+  "gpu_ms": 22.285,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "central_sq_aerial",
+  "frame_ms": 19.14,
+  "fps": 52.25,
+  "game_ms": 2.465,
+  "render_ms": 0.0,
+  "gpu_ms": 18.935,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "central_sq_street",
+  "frame_ms": 23.89,
+  "fps": 41.85,
+  "game_ms": 2.655,
+  "render_ms": 0.0,
+  "gpu_ms": 23.68,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "kendall",
+  "frame_ms": 24.29,
+  "fps": 41.15,
+  "game_ms": 2.935,
+  "render_ms": 0.0,
+  "gpu_ms": 24.105,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "aerial",
+  "frame_ms": 20.13,
+  "fps": 49.7,
+  "game_ms": 2.68,
+  "render_ms": 0.0,
+  "gpu_ms": 19.945,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "boston_skyline",
+  "frame_ms": 25.52,
+  "fps": 39.2,
+  "game_ms": 4.015,
+  "render_ms": 0.0,
+  "gpu_ms": 25.33,
+  "viewport": "1280x720"
+ }
+]
