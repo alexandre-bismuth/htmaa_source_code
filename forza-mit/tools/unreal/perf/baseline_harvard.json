@@ -1,0 +1,110 @@
+[
+ {
+  "name": "harvard_sq_street",
+  "frame_ms": 23.46,
+  "fps": 42.65,
+  "game_ms": 1.59,
+  "render_ms": 23.455,
+  "gpu_ms": 23.325,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "yard_tercentenary",
+  "frame_ms": 23.21,
+  "fps": 43.15,
+  "game_ms": 2.59,
+  "render_ms": 0.0,
+  "gpu_ms": 23.015,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "cambridge_common",
+  "frame_ms": 28.06,
+  "fps": 35.6,
+  "game_ms": 2.54,
+  "render_ms": 0.0,
+  "gpu_ms": 27.865,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "yard_north",
+  "frame_ms": 24.065,
+  "fps": 41.55,
+  "game_ms": 2.57,
+  "render_ms": 0.0,
+  "gpu_ms": 23.885,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "memorial_dr_harvard",
+  "frame_ms": 25.32,
+  "fps": 39.5,
+  "game_ms": 2.615,
+  "render_ms": 0.0,
+  "gpu_ms": 25.13,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "river_houses_low_aerial",
+  "frame_ms": 29.735,
+  "fps": 33.65,
+  "game_ms": 2.96,
+  "render_ms": 0.0,
+  "gpu_ms": 29.545,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "law_divinity",
+  "frame_ms": 22.93,
+  "fps": 43.65,
+  "game_ms": 2.68,
+  "render_ms": 0.0,
+  "gpu_ms": 22.75,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "radcliffe_quad",
+  "frame_ms": 24.93,
+  "fps": 40.15,
+  "game_ms": 2.755,
+  "render_ms": 0.0,
+  "gpu_ms": 24.75,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "somerville_edge",
+  "frame_ms": 23.325,
+  "fps": 42.9,
+  "game_ms": 3.26,
+  "render_ms": 0.0,
+  "gpu_ms": 23.14,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "underpass_check",
+  "frame_ms": 40.365,
+  "fps": 27.75,
+  "game_ms": 9.76,
+  "render_ms": 0.0,
+  "gpu_ms": 26.91,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "longfellow_walls_check",
+  "frame_ms": 26.475,
+  "fps": 37.8,
+  "game_ms": 3.22,
+  "render_ms": 0.0,
+  "gpu_ms": 26.285,
+  "viewport": "1280x720"
+ },
+ {
+  "name": "bu_bridge_interchange",
+  "frame_ms": 24.645,
+  "fps": 40.6,
+  "game_ms": 2.665,
+  "render_ms": 0.0,
+  "gpu_ms": 24.4,
+  "viewport": "1280x720"
+ }
+]

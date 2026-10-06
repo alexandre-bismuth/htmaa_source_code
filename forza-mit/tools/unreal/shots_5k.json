@@ -1,0 +1,430 @@
+[
+ {
+  "name": "chase_sp100",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 4,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "chase_sp75",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "chase_sp67",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "chase_sp50",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "r.ScreenPercentage 50"
+ },
+ {
+  "name": "massave_street_sp100",
+  "loc": [
+   96500,
+   102000,
+   160
+  ],
+  "rot": [
+   -2,
+   -110.6,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "massave_street_sp75",
+  "loc": [
+   96500,
+   102000,
+   160
+  ],
+  "rot": [
+   -2,
+   -110.6,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "massave_street_sp67",
+  "loc": [
+   96500,
+   102000,
+   160
+  ],
+  "rot": [
+   -2,
+   -110.6,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "massave_street_sp50",
+  "loc": [
+   96500,
+   102000,
+   160
+  ],
+  "rot": [
+   -2,
+   -110.6,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 50"
+ },
+ {
+  "name": "killian_court_sp100",
+  "loc": [
+   105452,
+   94410,
+   250
+  ],
+  "rot": [
+   4,
+   -104.7,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "killian_court_sp75",
+  "loc": [
+   105452,
+   94410,
+   250
+  ],
+  "rot": [
+   4,
+   -104.7,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "killian_court_sp67",
+  "loc": [
+   105452,
+   94410,
+   250
+  ],
+  "rot": [
+   4,
+   -104.7,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "killian_court_sp50",
+  "loc": [
+   105452,
+   94410,
+   250
+  ],
+  "rot": [
+   4,
+   -104.7,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 50"
+ },
+ {
+  "name": "central_sq_street_sp100",
+  "loc": [
+   8590,
+   20883,
+   180
+  ],
+  "rot": [
+   -3,
+   -135,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "central_sq_street_sp75",
+  "loc": [
+   8590,
+   20883,
+   180
+  ],
+  "rot": [
+   -3,
+   -135,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "central_sq_street_sp67",
+  "loc": [
+   8590,
+   20883,
+   180
+  ],
+  "rot": [
+   -3,
+   -135,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "central_sq_street_sp50",
+  "loc": [
+   8590,
+   20883,
+   180
+  ],
+  "rot": [
+   -3,
+   -135,
+   0
+  ],
+  "fov": 75,
+  "exec": "r.ScreenPercentage 50"
+ },
+ {
+  "name": "aerial_sp100",
+  "loc": [
+   115000,
+   125000,
+   18000
+  ],
+  "rot": [
+   -35,
+   -90,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "aerial_sp75",
+  "loc": [
+   115000,
+   125000,
+   18000
+  ],
+  "rot": [
+   -35,
+   -90,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "aerial_sp67",
+  "loc": [
+   115000,
+   125000,
+   18000
+  ],
+  "rot": [
+   -35,
+   -90,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "aerial_sp50",
+  "loc": [
+   115000,
+   125000,
+   18000
+  ],
+  "rot": [
+   -35,
+   -90,
+   0
+  ],
+  "fov": 70,
+  "exec": "r.ScreenPercentage 50"
+ },
+ {
+  "name": "cambridge_common_sp100",
+  "loc": [
+   -131800,
+   -108900,
+   170
+  ],
+  "rot": [
+   -3.0,
+   60,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "cambridge_common_sp75",
+  "loc": [
+   -131800,
+   -108900,
+   170
+  ],
+  "rot": [
+   -3.0,
+   60,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "cambridge_common_sp67",
+  "loc": [
+   -131800,
+   -108900,
+   170
+  ],
+  "rot": [
+   -3.0,
+   60,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "cambridge_common_sp50",
+  "loc": [
+   -131800,
+   -108900,
+   170
+  ],
+  "rot": [
+   -3.0,
+   60,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 50"
+ },
+ {
+  "name": "harvard_sq_street_sp100",
+  "loc": [
+   -116200,
+   -70600,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -127,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 100"
+ },
+ {
+  "name": "harvard_sq_street_sp75",
+  "loc": [
+   -116200,
+   -70600,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -127,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 75"
+ },
+ {
+  "name": "harvard_sq_street_sp67",
+  "loc": [
+   -116200,
+   -70600,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -127,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 67"
+ },
+ {
+  "name": "harvard_sq_street_sp50",
+  "loc": [
+   -116200,
+   -70600,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -127,
+   0
+  ],
+  "fov": 70,
+  "settle": 3,
+  "exec": "r.ScreenPercentage 50"
+ }
+]

@@ -1,0 +1,15 @@
+[
+  {"name": "chase", "loc": [0, 0, 0], "rot": [0, 0, 0], "settle": 4},
+  {"name": "car_side", "loc": [95774, 102854, 100], "rot": [-5, -20.65, 0], "fov": 50},
+  {"name": "car_front34", "loc": [95767, 102269, 130], "rot": [-8, 40.7, 0], "fov": 50},
+  {"name": "car_driver", "loc": [96488, 102619, 135], "rot": [-4, 159.35, 0], "fov": 40},
+  {"name": "massave_street", "loc": [96500, 102000, 160], "rot": [-2, -110.6, 0], "fov": 75},
+  {"name": "tree_close", "loc": [105452, 94410, 250], "rot": [2, -104.7, 0], "fov": 28},
+  {"name": "killian_court", "loc": [105452, 94410, 250], "rot": [4, -104.7, 0], "fov": 70},
+  {"name": "cambridgeport_trees", "loc": [4119, 74200, 2500], "rot": [-22, -90, 0], "fov": 70},
+  {"name": "central_sq_aerial", "loc": [6590, 24883, 5000], "rot": [-38, -90, 0], "fov": 70},
+  {"name": "central_sq_street", "loc": [8590, 20883, 180], "rot": [-3, -135, 0], "fov": 75},
+  {"name": "kendall", "loc": [148282, 49970, 200], "rot": [-3, 180, 0], "fov": 75},
+  {"name": "aerial", "loc": [115000, 125000, 18000], "rot": [-35, -90, 0], "fov": 70},
+  {"name": "boston_skyline", "loc": [99500, 111500, 400], "rot": [3, 42, 0], "fov": 75}
+]

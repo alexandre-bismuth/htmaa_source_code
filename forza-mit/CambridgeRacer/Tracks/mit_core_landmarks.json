@@ -1,0 +1,141 @@
+{
+ "region": "mit_core",
+ "units": "UE cm (X east, Y south, Z up; ground at 0); roof_m in metres above the ground",
+ "source": "City of Cambridge address points + 3D building models (tools/minimap/landmarks.py)",
+ "landmarks": [
+  {
+   "id": "arch_shop",
+   "label": "ARCHITECTURE SHOP",
+   "subtitle": "MET WAREHOUSE",
+   "address": "134 Massachusetts Ave / 95 Vassar St",
+   "building": "Metropolitan Storage Warehouse (MIT SA+P)",
+   "bldg_id": "703-1",
+   "lonlat": [
+    -71.0952475,
+    42.3600838
+   ],
+   "icon": "landmark_arch",
+   "accent": "#ff9a1f",
+   "entrance": [
+    76260.1,
+    76875.2,
+    0.0
+   ],
+   "anchor": [
+    76629.9,
+    76722.8,
+    0.0
+   ],
+   "centroid": [
+    69529.7,
+    79649.7,
+    0.0
+   ],
+   "roof_m": 22.89,
+   "roof_max_m": 22.89,
+   "facing_yaw": -22.4,
+   "footprint_m2": 4256,
+   "viewpoints": [
+    {
+     "d_m": 50.9,
+     "loc": [
+      80953.9,
+      74907.1,
+      60.0
+     ],
+     "yaw": 146.58,
+     "street": "Vassar St"
+    },
+    {
+     "d_m": 148.4,
+     "loc": [
+      89137.8,
+      69506.7,
+      60.0
+     ],
+     "yaw": 146.58,
+     "street": "Vassar St"
+    },
+    {
+     "d_m": 299.9,
+     "loc": [
+      101765.5,
+      61102.6,
+      60.0
+     ],
+     "yaw": 146.33,
+     "street": "Vassar St"
+    }
+   ],
+   "fade_far_m": [
+    380,
+    450
+   ]
+  },
+  {
+   "id": "htmaa",
+   "label": "HTMAA LECTURES",
+   "subtitle": "MEDIA LAB E14",
+   "address": "75 Amherst St",
+   "building": "MIT Media Lab, Building E14",
+   "bldg_id": "672-6",
+   "lonlat": [
+    -71.0875001,
+    42.3602115
+   ],
+   "icon": "landmark_htmaa",
+   "accent": "#3fc8ff",
+   "entrance": [
+    140091.9,
+    75492.2,
+    0.0
+   ],
+   "anchor": [
+    139938.2,
+    75861.5,
+    0.0
+   ],
+   "centroid": [
+    141304.3,
+    72578.2,
+    0.0
+   ],
+   "roof_m": 32.53,
+   "roof_max_m": 32.53,
+   "facing_yaw": 112.59,
+   "footprint_m2": 2502,
+   "viewpoints": [
+    {
+     "d_m": 49.2,
+     "loc": [
+      144970.2,
+      74875.7,
+      60.0
+     ],
+     "yaw": 155.63,
+     "street": "Amherst St"
+    },
+    {
+     "d_m": 150.7,
+     "loc": [
+      154366.1,
+      70653.4,
+      60.0
+     ],
+     "yaw": 155.94,
+     "street": "Amherst St"
+    },
+    {
+     "d_m": 300.9,
+     "loc": [
+      134781.0,
+      45873.0,
+      60.0
+     ],
+     "yaw": 95.02,
+     "street": "Ames St"
+    }
+   ]
+  }
+ ]
+}

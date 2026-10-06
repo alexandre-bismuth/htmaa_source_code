@@ -1,0 +1,206 @@
+[
+ {
+  "name": "chase_fs_idle_spawn",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 5
+ },
+ {
+  "name": "chase_fs_race_start",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 9,
+  "exec": "cr.TT.Start 3"
+ },
+ {
+  "name": "chase_fs_race_driving",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 12
+ },
+ {
+  "name": "chase_fs_race_driving_b",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 6
+ },
+ {
+  "name": "chase_fs_free_roam",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 4,
+  "exec": "cr.TT.Result 2"
+ },
+ {
+  "name": "fs_killian_court",
+  "loc": [
+   105452,
+   94410,
+   250
+  ],
+  "rot": [
+   4,
+   -104.7,
+   0
+  ],
+  "fov": 70
+ },
+ {
+  "name": "fs_massave_street",
+  "loc": [
+   96500,
+   102000,
+   160
+  ],
+  "rot": [
+   -2,
+   -110.6,
+   0
+  ],
+  "fov": 75
+ },
+ {
+  "name": "fs_cambridge_common",
+  "loc": [
+   -131800,
+   -108900,
+   170
+  ],
+  "rot": [
+   -3.0,
+   60,
+   0
+  ],
+  "fov": 70,
+  "settle": 3
+ },
+ {
+  "name": "fs_harvard_sq_street",
+  "loc": [
+   -116200,
+   -70600,
+   180
+  ],
+  "rot": [
+   -3.0,
+   -127,
+   0
+  ],
+  "fov": 70,
+  "settle": 3
+ },
+ {
+  "name": "chase_fs_back_to_car",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 3
+ },
+ {
+  "name": "menu_fs_graphics",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "cr.Menu.Tab 0"
+ },
+ {
+  "name": "chase_fs_menu_closed",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "cr.Menu"
+ },
+ {
+  "name": "map_fs_full_map",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "cr.Map.View 0 -20000 0.2"
+ },
+ {
+  "name": "chase_fs_map_closed",
+  "loc": [
+   0,
+   0,
+   0
+  ],
+  "rot": [
+   0,
+   0,
+   0
+  ],
+  "settle": 2,
+  "exec": "cr.Map.Toggle 0"
+ }
+]
