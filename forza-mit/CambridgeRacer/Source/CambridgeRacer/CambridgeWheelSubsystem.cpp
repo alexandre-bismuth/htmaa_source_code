@@ -40,13 +40,13 @@ namespace
 
 	// test: drive the wheel's buttons / throttle from a shot tour step (a wheel or wheel_sim.py must be connected)
 	FAutoConsoleCommandWithWorldAndArgs WheelTestCmd(TEXT("cr.Wheel.Test"),
-		TEXT("Test: cr.Wheel.Test <seconds> <throttle 0..1> <buttons: 1 right paddle, 2 left, 3 both, 4 start> (needs a connected wheel or wheel_sim.py)"),
+		TEXT("Test: cr.Wheel.Test <seconds> <throttle 0..1> <buttons: 1 right paddle, 2 left, 3 both, 4 start> [brake 0..1] (needs a connected wheel or wheel_sim.py)"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
 			if (UCambridgeWheelSubsystem* W = GI ? GI->GetSubsystem<UCambridgeWheelSubsystem>() : nullptr; W && Args.Num() >= 3)
 			{
-				W->SetTestInput(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atoi(*Args[2]));
+				W->SetTestInput(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atoi(*Args[2]), Args.Num() > 3 ? FCString::Atof(*Args[3]) : 0.0f);
 			}
 		}));
 
@@ -150,7 +150,7 @@ FWheelInputState UCambridgeWheelSubsystem::GetState() const
 	FWheelInputState S;
 	S.SteerDeg = (RawSteer - SteerCentreCentideg) / 100.0f;
 	S.Throttle = FPlatformTime::Seconds() < TestUntil ? TestThrottle : Pedal(RawThrottle, CalThrottleMin, CalThrottleMax);
-	S.Brake = Pedal(RawBrake, CalBrakeMin, CalBrakeMax);
+	S.Brake = FPlatformTime::Seconds() < TestUntil ? TestBrake : Pedal(RawBrake, CalBrakeMin, CalBrakeMax);
 	S.bUpshift = (Buttons & 1) != 0;
 	S.bDownshift = (Buttons & 2) != 0;
 	S.bStart = (Buttons & 4) != 0;
@@ -238,13 +238,14 @@ EWheelMenuAction UCambridgeWheelSubsystem::ConsumeMenuAction()
 	return EWheelMenuAction::None;
 }
 
-void UCambridgeWheelSubsystem::SetTestInput(float Seconds, float Throttle, int32 InButtons)
+void UCambridgeWheelSubsystem::SetTestInput(float Seconds, float Throttle, int32 InButtons, float Brake)
 {
 	FScopeLock L(&Lock);
 	TestUntil = FPlatformTime::Seconds() + FMath::Max(0.0f, Seconds);
 	TestThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
 	TestButtons = InButtons & 7;
-	UE_LOG(LogWheel, Display, TEXT("wheel: test input %.2f s, throttle %.2f, buttons %d"), Seconds, TestThrottle, TestButtons);
+	TestBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
+	UE_LOG(LogWheel, Display, TEXT("wheel: test input %.2f s, throttle %.2f, buttons %d, brake %.2f"), Seconds, TestThrottle, TestButtons, TestBrake);
 }
 
 void UCambridgeWheelSubsystem::SetForceFeedback(float Torque)

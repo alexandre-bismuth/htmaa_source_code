@@ -58,8 +58,10 @@ What the torque contains:
 
 - The wheel overrides keyboard and gamepad steering, throttle and brake. Everything else still works (Esc menu, camera, assists keys).
 - Steering is linear over half the *Wheel rotation* setting (default 540° lock-to-lock, so ±270° = full lock of the road wheels). It's 1:1 at all speeds (the keyboard's speed-sensitive steering is undone).
-- Two independent pedals: left-foot braking works. The **brake never engages reverse**; reverse = downshift past neutral (1 → N → R).
-- A paddle press switches the gearbox to manual (G toggles back to auto). Reverse is refused above 8 km/h.
+- Two independent pedals: left-foot braking works.
+- The gearbox setting (automatic / manual) changes only in Settings > Driving Assists, never from the wheel.
+- Automatic (as in Forza): the paddles don't shift. Holding the brake at a standstill engages reverse; the brake pedal then drives and the throttle brakes, and the throttle at a standstill goes back to first.
+- Manual: the paddles shift, the **brake never engages reverse**; reverse = downshift past neutral (1 → N → R), refused above 8 km/h.
 - No start button: **both paddles pressed together** are the start everywhere. In menus one paddle waits 0.12 s in
   case the other joins, so pressing both never moves the selection first. Every key hint switches to these controls
   while the wheel is connected:

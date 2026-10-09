@@ -233,8 +233,7 @@ void AImprezaSTi::Tick(float Delta)
 		Wheel->SetForceFeedback(0.0f);
 	}
 	const bool bWheel = Wheel && Wheel->IsActive() && !bMenu;
-	// keyboard / gamepad: holding brake at a standstill reverses. Real pedals: the brake only brakes,
-	// reverse is a downshift past neutral
+	// keyboard / gamepad: holding brake at a standstill reverses. Real pedals: see ApplyWheelInput
 	GetChaosVehicleMovement()->bReverseAsBrake = !bWheel;
 	if (bWheel)
 	{
@@ -459,15 +458,21 @@ void AImprezaSTi::RequestGear(int32 From, int32 To)
 
 void AImprezaSTi::ShiftUp()
 {
+	if (bAutoShift)
+	{
+		return;     // automatic (as in Forza): the shifters do nothing; the gearbox setting is only in the menu
+	}
 	const int32 From = GearForShift();
-	SetAutoShift(false);    // touching a shifter (key or paddle) takes over the gearbox
 	RequestGear(From, FMath::Min(From + 1, 6));
 }
 
 void AImprezaSTi::ShiftDown()
 {
+	if (bAutoShift)
+	{
+		return;
+	}
 	const int32 From = GearForShift();
-	SetAutoShift(false);
 	UChaosWheeledVehicleMovementComponent* Move = GetChaosVehicleMovement();
 	// reverse only from (nearly) standing: past neutral at speed it stays in neutral
 	const int32 Lowest = Move->GetForwardSpeed() * 0.036f > 8.0f ? 0 : -1;
@@ -493,9 +498,28 @@ void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 	const float SpeedMph = FMath::Abs(Move->GetForwardSpeedMPH());
 	const float Curve = FMath::Max(Move->SteeringSetup.SteeringCurve.GetRichCurveConst()->Eval(SpeedMph), 0.05f);
 	Move->SetSteeringInput(FMath::Clamp(S.SteerDeg / Half / Curve, -1.0f, 1.0f));
-	// two independent pedals: left-foot braking works
-	DriverThrottle = S.Throttle;
-	Move->SetBrakeInput(S.Brake);
+	// two independent pedals: left-foot braking works. Automatic (as in Forza): the brake held at a standstill
+	// engages reverse, where the pedals swap (the brake drives, the throttle brakes), and the throttle at a
+	// standstill goes back to first. (Chaos' bReverseAsBrake would make any brake pressure full braking.)
+	float Throttle = S.Throttle, Brake = S.Brake;
+	if (bAutoShift)
+	{
+		const bool bStopped = FMath::Abs(Move->GetForwardSpeed()) < 100.0f;     // cm/s, as Chaos' keyboard reverse
+		if (bStopped && Move->GetTargetGear() >= 0 && Brake > 0.1f && Throttle < 0.05f)
+		{
+			Move->SetTargetGear(-1, true);
+		}
+		else if (bStopped && Move->GetTargetGear() < 0 && Throttle > 0.05f && Brake < 0.1f)
+		{
+			Move->SetTargetGear(1, true);
+		}
+		if (Move->GetTargetGear() < 0)
+		{
+			Swap(Throttle, Brake);
+		}
+	}
+	DriverThrottle = Throttle;
+	Move->SetBrakeInput(Brake);
 	// (the results window: the paddles pick its buttons, UTimeTrialSubsystem takes them)
 	const UTimeTrialSubsystem* TT = GetWorld() ? GetWorld()->GetSubsystem<UTimeTrialSubsystem>() : nullptr;
 	if (!TT || TT->GetState() != ETimeTrialState::Finished)
@@ -565,7 +589,6 @@ void AImprezaSTi::EnsureAssistInput()
 	ShiftUpAction = MakeAction(TEXT("IA_ShiftUp"));
 	ShiftDownAction = MakeAction(TEXT("IA_ShiftDown"));
 	CycleTCAction = MakeAction(TEXT("IA_CycleTC"));
-	ToggleAutoShiftAction = MakeAction(TEXT("IA_ToggleAutoShift"));
 	ToggleABSAction = MakeAction(TEXT("IA_ToggleABS"));
 
 	AssistMapping = NewObject<UInputMappingContext>(this, TEXT("IMC_ImprezaAssists"));
@@ -575,7 +598,6 @@ void AImprezaSTi::EnsureAssistInput()
 	AssistMapping->MapKey(ShiftDownAction, EKeys::Q);
 	AssistMapping->MapKey(ShiftDownAction, EKeys::Gamepad_FaceButton_Left);
 	AssistMapping->MapKey(CycleTCAction, EKeys::T);
-	AssistMapping->MapKey(ToggleAutoShiftAction, EKeys::G);
 	AssistMapping->MapKey(ToggleABSAction, EKeys::B);
 }
 
@@ -601,7 +623,6 @@ void AImprezaSTi::SetupPlayerInputComponent(UInputComponent* PlayerInputComponen
 		EIC->BindAction(ShiftUpAction, ETriggerEvent::Started, this, &AImprezaSTi::ShiftUp);
 		EIC->BindAction(ShiftDownAction, ETriggerEvent::Started, this, &AImprezaSTi::ShiftDown);
 		EIC->BindAction(CycleTCAction, ETriggerEvent::Started, this, &AImprezaSTi::CycleTractionControl);
-		EIC->BindAction(ToggleAutoShiftAction, ETriggerEvent::Started, this, &AImprezaSTi::ToggleAutoShiftInput);
 		EIC->BindAction(ToggleABSAction, ETriggerEvent::Started, this, &AImprezaSTi::ToggleABSInput);
 	}
 }

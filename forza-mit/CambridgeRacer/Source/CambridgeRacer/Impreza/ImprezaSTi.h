@@ -93,7 +93,6 @@ private:
 	void RequestGear(int32 From, int32 To);
 	double LastManualShiftTime = -100.0;
 	void EnsureAssistInput();
-	void ToggleAutoShiftInput() { SetAutoShift(!bAutoShift); }
 	void ToggleABSInput() { SetABS(!bABS); }
 
 	float Boost = 0.0f;
@@ -124,6 +123,5 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ShiftUpAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ShiftDownAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> CycleTCAction;
-	UPROPERTY(Transient) TObjectPtr<UInputAction> ToggleAutoShiftAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ToggleABSAction;
 };
