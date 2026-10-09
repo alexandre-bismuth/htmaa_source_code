@@ -61,9 +61,9 @@ namespace
 		{ TEXT("Throttle"),               TEXT("W / Up"),              TEXT("RT"),               TEXT("Right pedal") },
 		{ TEXT("Brake / reverse"),        TEXT("S / Down"),            TEXT("LT"),               TEXT("Left pedal") },
 		{ TEXT("Handbrake"),              TEXT("Space"),               TEXT("A"),                TEXT("-") },
-		{ TEXT("Shift up / down"),        TEXT("E / Q"),               TEXT("B / X"),            TEXT("Right / left paddle") },
+		{ TEXT("Shift up / down (manual)"), TEXT("E / Q"),               TEXT("B / X"),            TEXT("Right / left paddle") },
 		{ TEXT("Reverse (manual)"),       TEXT("Q past N"),            TEXT("X past N"),         TEXT("Left paddle past N") },
-		{ TEXT("Auto / manual gears"),    TEXT("G"),                   TEXT("-"),                TEXT("Paddle = manual") },
+		{ TEXT("Auto / manual gears"),    TEXT("Menu: assists"),       TEXT("Menu: assists"),    TEXT("Menu: assists") },
 		{ TEXT("Traction control / ABS"), TEXT("T / B"),               TEXT("Menu: assists"),    TEXT("Menu: assists") },
 		{ TEXT("Camera / look"),          TEXT("Tab / mouse"),         TEXT("RB / right stick"), TEXT("-") },
 		{ TEXT("Start an event"),         TEXT("Enter in the box"),    TEXT("A, stopped in box"), TEXT("Both paddles in the box") },
@@ -656,7 +656,7 @@ void UCambridgeMenuSubsystem::Deinitialize()
 	Input.Reset();
 	CloseMenu();
 	SetOverlayVisible(false);
-	// quitting: keep what the T / G / B keys changed (the menu saves on close; automated runs save nothing)
+	// quitting: keep what the T / B keys changed (the menu saves on close; automated runs save nothing)
 	if (UCambridgeGameUserSettings* S = bEnabled ? UCambridgeGameUserSettings::Get() : nullptr)
 	{
 		S->SaveSettings();

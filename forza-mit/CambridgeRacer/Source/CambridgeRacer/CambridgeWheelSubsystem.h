@@ -65,8 +65,8 @@ public:
 	 *  starts clean (presses made before are dropped). */
 	EWheelMenuAction ConsumeMenuAction();
 	/** Test (cr.Wheel.Test, with a wheel connected: wheel_sim.py --script idle): for Seconds the buttons read Buttons
-	 *  (1 right paddle, 2 left, 4 start) and the throttle reads Throttle (0..1), whatever the device sends. */
-	void SetTestInput(float Seconds, float Throttle, int32 Buttons);
+	 *  (1 right paddle, 2 left, 4 start) and the pedals read Throttle and Brake (0..1), whatever the device sends. */
+	void SetTestInput(float Seconds, float Throttle, int32 Buttons, float Brake = 0.0f);
 
 	/** Force feedback for the next frame, -1..1 (+ = clockwise); scaled by the strength setting. */
 	void SetForceFeedback(float Torque);
@@ -135,6 +135,7 @@ private:
 	// test override (under Lock): cr.Wheel.Test
 	double TestUntil = 0.0;
 	float TestThrottle = 0.0f;
+	float TestBrake = 0.0f;
 	int32 TestButtons = 0;
 
 	// menu actions (game thread)

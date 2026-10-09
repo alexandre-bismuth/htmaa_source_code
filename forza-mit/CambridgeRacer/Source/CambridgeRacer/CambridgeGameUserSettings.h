@@ -37,7 +37,7 @@ public:
 
 	UPROPERTY(config) bool bShowFPS = true;
 
-	// driving assists (applied to the car when it spawns; the T / G / B keys and the menu write them)
+	// driving assists (applied to the car when it spawns; the T / B keys and the menu write them)
 	UPROPERTY(config) int32 TractionControlMode = 1;   // 0 off, 1 sport, 2 full
 	UPROPERTY(config) bool bAutomaticGearbox = true;
 	UPROPERTY(config) bool bABSEnabled = true;
