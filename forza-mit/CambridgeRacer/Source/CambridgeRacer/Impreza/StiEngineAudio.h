@@ -6,9 +6,10 @@
 //            from BeginPlay and stay crank-locked (same firing phase), so a crossfade never
 //            cancels the low orders that carry the boxer burble; silent loops whose pitch hit UE's
 //            global pitch clamp are nudged back into phase before they are heard again.
-//            Load: throttle, forced to overrun during gear changes and the rev-limiter cuts.
+//            Load: throttle (in keyboard / gamepad reverse the brake key, which drives the car there), forced to
+//            overrun during gear changes and the rev-limiter cuts.
 //   pops     overrun afterfire one-shots, fired at random after a lift-off at revs / on upshifts
-//   turbo    a quiet spool whine with boost; blow-off "pshh" on lift-off or upshift at boost
+//   turbo    a quiet spool whine with boost (louder with rpm, where the engine masks it); blow-off "pshh" on lift-off or upshift at boost
 //   tyres    squeal from body slip angle and wheelspin
 // Non-spatialised (the camera always follows this car).
 // tools/mapgen/render_engine_demo.py is a line-by-line Python port of TickComponent: keep them in sync.
@@ -32,7 +33,14 @@ public:
 	virtual void BeginPlay() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
-	UPROPERTY(EditAnywhere, Category = "Audio") float MasterVolume = 2.0f;
+	// Mac: the game outputs mix x 0.25 per channel (PlatformHeadroomDB -6 dB x mono 2D upmix 0.5), so at 2.0 the clean mix
+	// peaks around -7 dBFS (tools/mapgen/render_engine_demo.py prints it); voice volumes are clamped at 4.0 after the headroom
+	/** The car's level (x Options > Sound > Engine and turbo). 2.4 since 2026-10-08 (was 2.0; the clean in-game peak
+	 *  was -8.3 dBFS at 2.0, so about -6.7 now); about 2.8 is the most before a limiter would be needed. */
+	UPROPERTY(EditAnywhere, Category = "Audio") float MasterVolume = 2.4f;
+
+	/** Silent (all voices paused, like the pause menu) while the launch menu is up. */
+	void SetMuted(bool bInMuted) { bMuted = bInMuted; }
 
 private:
 	UAudioComponent* MakeVoice(USoundWave* Wave);
@@ -66,4 +74,6 @@ private:
 	double LastBlowOff = -10.0;
 	double LastPop = -10.0;
 	bool bPaused = false;
+	bool bMuted = false;
+	float Gain = 2.4f;               // MasterVolume x the player's engine volume, this tick
 };

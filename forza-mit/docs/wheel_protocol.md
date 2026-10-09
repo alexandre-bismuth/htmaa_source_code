@@ -25,7 +25,7 @@ W -1234 2048 0 1
 |---|---|
 | `steer_centideg` | rim angle in 1/100 degree, signed, **+ = clockwise (right)**. Any zero works: the player sets the centre in the menu (Esc, then *Centre wheel*). |
 | `throttle_raw`, `brake_raw` | raw pedal readings, integers (e.g. 12-bit ADC: 0..4095), **increasing as the pedal is pressed** (invert in firmware if needed). The game learns each pedal's min/max travel by itself: press both pedals fully once after first plugging in. It keeps a 3 % dead zone at both ends. |
-| `buttons` | bit 0 = **upshift** paddle, bit 1 = **downshift** paddle, bit 2 = start/confirm (optional). Send the current state; the game detects presses. Debounce in firmware (~5 ms). |
+| `buttons` | bit 0 = **upshift** paddle, bit 1 = **downshift** paddle, bit 2 = start/confirm (optional: this wheel has none; both paddles pressed together do the same everywhere). Send the current state; the game detects presses. Debounce in firmware (~5 ms). |
 
 Reply to `?` (sent by the game when it opens the port) with an info line:
 
@@ -60,7 +60,18 @@ What the torque contains:
 - Steering is linear over half the *Wheel rotation* setting (default 540° lock-to-lock, so ±270° = full lock of the road wheels). It's 1:1 at all speeds (the keyboard's speed-sensitive steering is undone).
 - Two independent pedals: left-foot braking works. The **brake never engages reverse**; reverse = downshift past neutral (1 → N → R).
 - A paddle press switches the gearbox to manual (G toggles back to auto). Reverse is refused above 8 km/h.
-- In the Esc menu the wheel navigates too: paddles move up/down, turning the rim past 50° changes a value, start switches section.
+- No start button: **both paddles pressed together** are the start everywhere. In menus one paddle waits 0.12 s in
+  case the other joins, so pressing both never moves the selection first. Every key hint switches to these controls
+  while the wheel is connected:
+  - launch menu: left / right paddle = up / down, both tapped = go, both held 0.8 s (or the rim turned left past
+    50°) = back;
+  - settings (Esc): left / right paddle = up / down, turning the rim past 50° changes a value, both tapped = next
+    section, both held 0.8 s = close;
+  - a start box: both paddles start the event;
+  - in an event: both tapped = back on track, held 1 s = restart; leaving an event stays on the keyboard (hold
+    Backspace);
+  - the results: one paddle picks Retry / Next event / Free roam (no shifting there), both tapped press it.
+  A start button on bit 2, if one is ever added, does what a tap of both paddles does.
 - **Port detection:** the game scans `/dev` for `cu.usbmodem*` / `ttyACM*` and sends `?`. A port that sends no valid
   `W` sample within 3 s is skipped (so another USB-serial board isn't mistaken for the wheel). `-WheelPort=<path>`
   overrides detection for one run and is never saved; a saved port that no longer exists (or is a pty) is ignored.

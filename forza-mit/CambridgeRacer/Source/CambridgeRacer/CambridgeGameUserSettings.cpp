@@ -6,6 +6,7 @@
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "AudioDevice.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
@@ -57,6 +58,7 @@ void UCambridgeGameUserSettings::SetToDefaults()
 {
 	Super::SetToDefaults();
 	bShowFPS = true;
+	MasterVolume = EngineVolume = RaceSoundsVolume = 1.0f;
 	ApplyPreset(2);
 }
 
@@ -118,8 +120,20 @@ void UCambridgeGameUserSettings::ApplyTreeDistance(UInstancedStaticMeshComponent
 	}
 }
 
+void UCambridgeGameUserSettings::ApplySound() const
+{
+	if (GEngine)
+	{
+		if (FAudioDeviceHandle Device = GEngine->GetMainAudioDevice())
+		{
+			Device->SetTransientPrimaryVolume(FMath::Clamp(MasterVolume, 0.0f, 1.0f));
+		}
+	}
+}
+
 void UCambridgeGameUserSettings::ApplyProjectSettings() const
 {
+	ApplySound();
 	SetCVar(TEXT("r.VolumetricCloud"), bVolumetricClouds ? 1 : 0);
 	// the resolution scale counts from 1080p: a bigger window (fullscreen on the 5K Studio Display is 2560x1440 without
 	// high DPI) renders at most the pixels of a 1080p frame at that scale, and TSR upscales to the window. GPU time
@@ -172,7 +186,7 @@ namespace
 				Menu->ToggleMenu();
 			}
 		}));
-	FAutoConsoleCommandWithWorldAndArgs MenuTabCmd(TEXT("cr.Menu.Tab"), TEXT("Open the settings menu on a section: 0 graphics, 1 assists, 2 calibration, 3 controls"),
+	FAutoConsoleCommandWithWorldAndArgs MenuTabCmd(TEXT("cr.Menu.Tab"), TEXT("Open the settings menu on a section: 0 graphics, 1 assists, 2 calibration, 3 sound, 4 controls"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			if (UCambridgeMenuSubsystem* Menu = World && World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UCambridgeMenuSubsystem>() : nullptr)

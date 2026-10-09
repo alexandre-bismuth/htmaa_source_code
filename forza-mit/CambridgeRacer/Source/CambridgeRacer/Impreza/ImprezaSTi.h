@@ -60,6 +60,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gearbox") void ShiftUp();
 	UFUNCTION(BlueprintCallable, Category = "Gearbox") void ShiftDown();
 
+	/** The launch menu parks the car behind it: no engine sound until it closes. */
+	void SetEngineSoundMuted(bool bMuted);
+
 	/** Turbo boost state 0..1 (for HUD / sound) */
 	UFUNCTION(BlueprintPure, Category = "Engine") float GetBoost() const { return Boost; }
 

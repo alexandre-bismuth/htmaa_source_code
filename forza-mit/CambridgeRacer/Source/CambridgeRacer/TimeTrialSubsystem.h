@@ -3,12 +3,13 @@
 // Events come from CambridgeRacer/Tracks/<map>.json (tools/mapgen/tracks.py: routes on the real
 // street network). In free roam each event has a start gantry with a start box painted on the road;
 // drive into the box and press
-//   Enter / gamepad A / wheel start button (or both paddles)   start the event
+//   Enter / gamepad A / wheel: both paddles together (its start)   start the event
 // During an event (keyboard / gamepad):
 //   R / Y / D-pad down (tap)       back on track: just before the next checkpoint, held for a 3-2-1
 //   R / Y / D-pad down / Enter (hold)  restart the event
 //   Backspace / D-pad up (hold)    leave the event (gamepad B is shift up while driving: Forza layout)
-//   wheel: start button or both paddles (hold) restart; start button (tap) back on track
+//   wheel (no start button: both paddles together are its start): tap back on track, hold 1 s restart. On the results one paddle picks the button and both together press it. The key hints switch
+//   to the wheel's controls while it is connected.
 // Results window: Left / Right (arrows, D-pad, stick) pick RETRY / NEXT EVENT / FREE ROAM, Enter / A
 // confirm; shortcuts R (retry), N (next event), Backspace / B (free roam).
 // (Gamepad A is the handbrake while driving: it starts an event only with the car stopped in the box,
@@ -100,6 +101,12 @@ public:
 	void PreviewHUD(const FString& What);
 	/** Test / debug (cr.TT.Result N): press results button N (0 retry, 1 next event, 2 free roam) now. */
 	void PressResult(int32 Choice) { if (State == ETimeTrialState::Finished) { ActivateResult(Choice); } }
+	/** Test (cr.TT.Finish): finish the running event now, for the results screen (the time is never saved). */
+	void FinishForTest();
+	/** Back to free roam if an event (countdown, race or results) is on: the launch menu's Main menu. */
+	void LeaveEvent() { if (IsInEvent()) { EndEvent(); } }
+	/** One of the race UI sounds (SoundNames in the .cpp: ui_select, ui_confirm, ...), 2D. */
+	void PlayUISound(FName Name, float Volume = 1.0f) const;
 	/** Perf A/B (cr.TT.Markers 0|1): hide the free-roam start markers. */
 	void SetMarkersHidden(bool bHidden);
 	/** Puts the car back on the racing line just before the next gate, lined up with it (R during an event). */
@@ -159,7 +166,6 @@ public:
 private:
 	void LoadTracks();
 	void LoadSounds();
-	void PlayUISound(FName Name, float Volume = 1.0f) const;
 	void SpawnMarkers();
 	/** Road height under a point (trace against the loaded world, the car ignored); false if nothing is loaded there. */
 	bool GroundZ(const FVector& At, float& OutZ) const;
@@ -172,6 +178,9 @@ private:
 	void Finish();
 	bool CrossedGate(const FTimeTrialGateDef& Gate, const FVector& From, const FVector& To) const;
 	class AImprezaSTi* GetCar() const;
+	/** The home-built wheel is connected: the key hints show its controls. */
+	bool IsWheelActive() const;
+	bool bFinishForTest = false;   // cr.TT.Finish: the results without saving a best
 	double Now() const;
 	/** The saved best run of T (empty / 0 if none, or if it was set on a different layout of T: other checkpoint count). */
 	TArray<double> BestSplits(const FTimeTrialTrack& T, double& OutTotal) const;

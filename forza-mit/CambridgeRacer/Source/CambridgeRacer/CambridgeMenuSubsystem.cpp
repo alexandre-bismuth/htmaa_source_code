@@ -1,6 +1,7 @@
 #include "CambridgeMenuSubsystem.h"
 
 #include "CambridgeGameUserSettings.h"
+#include "CambridgeLaunchSubsystem.h"
 #include "CambridgeUIStyle.h"
 #include "ImprezaSTi.h"
 #include "CambridgeWheelSubsystem.h"
@@ -43,13 +44,14 @@ namespace
 		int32 NumSelectable = -1;   // options past this index are display-only ("Custom")
 		TFunction<FText()> Display; // optional live value text (status rows)
 		TFunction<void()> Action;   // optional: Right / Enter / > runs this instead of changing a value
-		int32 Tab = 0;              // 0 graphics, 1 driving assists, 2 calibration (3 controls: a fixed table)
+		int32 Tab = 0;              // 0 graphics, 1 driving assists, 2 calibration, 3 sound (4 controls: a fixed table)
 	};
 
 	const FText TabNames[] = { LOCTEXT("TabGraphics", "Graphics"), LOCTEXT("TabAssists", "Driving Assists"), LOCTEXT("TabCalibration", "Calibration"),
-		LOCTEXT("TabControls", "Controls") };
-	constexpr int32 NumTabs = 4;
-	constexpr int32 ControlsTab = 3;
+		LOCTEXT("TabSound", "Sound"), LOCTEXT("TabControls", "Controls") };
+	constexpr int32 NumTabs = 5;
+	constexpr int32 SoundTab = 3;
+	constexpr int32 ControlsTab = 4;
 
 	/** The controls page: action, keyboard, gamepad, wheel. Keep in step with ACambridgeRacerPlayerController's
 	 *  scheme, AImprezaSTi::EnsureAssistInput, UTimeTrialSubsystem::OnKeyDown and docs/wheel_protocol.md. */
@@ -64,13 +66,13 @@ namespace
 		{ TEXT("Auto / manual gears"),    TEXT("G"),                   TEXT("-"),                TEXT("Paddle = manual") },
 		{ TEXT("Traction control / ABS"), TEXT("T / B"),               TEXT("Menu: assists"),    TEXT("Menu: assists") },
 		{ TEXT("Camera / look"),          TEXT("Tab / mouse"),         TEXT("RB / right stick"), TEXT("-") },
-		{ TEXT("Start an event"),         TEXT("Enter in the box"),    TEXT("A, stopped in box"), TEXT("Start button") },
-		{ TEXT("Reset / back on track"),  TEXT("R"),                   TEXT("Y / D-pad down"),   TEXT("Start (tap)") },
-		{ TEXT("Restart event"),          TEXT("Hold R"),              TEXT("Hold Y / D-pad down"), TEXT("Hold start") },
+		{ TEXT("Start an event"),         TEXT("Enter in the box"),    TEXT("A, stopped in box"), TEXT("Both paddles in the box") },
+		{ TEXT("Reset / back on track"),  TEXT("R"),                   TEXT("Y / D-pad down"),   TEXT("Both paddles (tap)") },
+		{ TEXT("Restart event"),          TEXT("Hold R"),              TEXT("Hold Y / D-pad down"), TEXT("Hold both paddles") },
 		{ TEXT("Leave event"),            TEXT("Hold Backspace"),      TEXT("Hold D-pad up"),    TEXT("-") },
 		{ TEXT("Full map"),               TEXT("M"),                   TEXT("View"),             TEXT("-") },
-		{ TEXT("Settings / back"),        TEXT("Esc / Backspace"),     TEXT("Menu / B"),         TEXT("-") },
-		{ TEXT("In this menu"),           TEXT("Tab, arrows"),         TEXT("LB RB, D-pad"),     TEXT("Paddles, rim, start") },
+		{ TEXT("Settings / back"),        TEXT("Esc / Backspace"),     TEXT("Menu / B"),         TEXT("Hold both paddles (menus)") },
+		{ TEXT("In this menu"),           TEXT("Tab, arrows"),         TEXT("LB RB, D-pad"),     TEXT("Paddles, both paddles, rim") },
 	};
 
 	TArray<FText> Levels() { return { LOCTEXT("Low", "Low"), LOCTEXT("Medium", "Medium"), LOCTEXT("High", "High"), LOCTEXT("Epic", "Epic") }; }
@@ -186,6 +188,22 @@ namespace
 			Rows.Add(Pedals);
 		}
 		for (int32 i = CalibrationStart; i < Rows.Num(); ++i) { Rows[i].Tab = 2; }
+
+		// --- sound (UCambridgeGameUserSettings::ApplySound, the car's audio and the race sounds read them live)
+		const int32 SoundStart = Rows.Num();
+		auto Percent = [](int32 Max)
+		{
+			TArray<FText> Out;
+			for (int32 P = 0; P <= Max; P += 10) { Out.Add(FText::FromString(FString::Printf(TEXT("%d %%"), P))); }
+			return Out;
+		};
+		Rows.Add({ LOCTEXT("MasterVolume", "Master volume"), Percent(100),
+			[S] { return FMath::Clamp(FMath::RoundToInt(S->MasterVolume * 10.0f), 0, 10); }, [S](int32 V) { S->MasterVolume = V / 10.0f; } });
+		Rows.Add({ LOCTEXT("EngineVolume", "Engine and turbo"), Percent(120),
+			[S] { return FMath::Clamp(FMath::RoundToInt(S->EngineVolume * 10.0f), 0, 12); }, [S](int32 V) { S->EngineVolume = V / 10.0f; } });
+		Rows.Add({ LOCTEXT("RaceVolume", "Race sounds"), Percent(100),
+			[S] { return FMath::Clamp(FMath::RoundToInt(S->RaceSoundsVolume * 10.0f), 0, 10); }, [S](int32 V) { S->RaceSoundsVolume = V / 10.0f; } });
+		for (int32 i = SoundStart; i < Rows.Num(); ++i) { Rows[i].Tab = SoundTab; }
 		return Rows;
 	}
 }
@@ -193,8 +211,14 @@ namespace
 class SCambridgeMenu : public SCompoundWidget
 {
 public:
-	SLATE_BEGIN_ARGS(SCambridgeMenu) {}
+	SLATE_BEGIN_ARGS(SCambridgeMenu) : _bFromLaunch(false) {}
 		SLATE_EVENT(FSimpleDelegate, OnClose)
+		/** in game: the Main menu button (back to the launch menu) */
+		SLATE_EVENT(FSimpleDelegate, OnMainMenu)
+		/** opened from the launch menu's Options: the button says Back */
+		SLATE_ARGUMENT(bool, bFromLaunch)
+		/** the home-built wheel is connected: the key hints show its controls */
+		SLATE_ATTRIBUTE(bool, bWheel)
 		SLATE_ATTRIBUTE(FText, TrayText)
 	SLATE_END_ARGS()
 
@@ -213,7 +237,7 @@ public:
 			MaxRows = FMath::Max(MaxRows, N);
 		}
 		MaxRows = FMath::Max(MaxRows, int32(UE_ARRAY_COUNT(ControlLines)));
-		static const FName TabIcons[] = { FName(TEXT("icon_monitor")), FName(TEXT("icon_car")), FName(TEXT("icon_wheel")), FName(TEXT("icon_info")) };
+		static const FName TabIcons[] = { FName(TEXT("icon_monitor")), FName(TEXT("icon_car")), FName(TEXT("icon_wheel")), FName(TEXT("icon_sound")), FName(TEXT("icon_info")) };
 		TSharedRef<SHorizontalBox> TabBar = SNew(SHorizontalBox);
 		for (int32 t = 0; t < NumTabs; ++t)
 		{
@@ -238,28 +262,74 @@ public:
 			for (const TCHAR* K : List) { Out.Add(FText::FromString(K)); }
 			return Out;
 		};
+		// keyboard / gamepad keys, or the home-built wheel's controls when it is connected (TickWheelNavigation)
+		const TAttribute<bool> Wheel = InArgs._bWheel;
+		auto ShowFor = [Wheel](bool bForWheel)
+		{
+			return TAttribute<EVisibility>::CreateLambda([Wheel, bForWheel]() { return Wheel.Get(false) == bForWheel ? EVisibility::Visible : EVisibility::Collapsed; });
+		};
 		TSharedRef<SWidget> Footer = SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
-			[
-				CUI::MakeKeyHint(Keys({ TEXT("TAB") }), LOCTEXT("HintTab", "Section"), false)
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
-			[
-				CUI::MakeKeyHint(Keys({ TEXT("^"), TEXT("v") }), LOCTEXT("HintSelect", "Select"), false)
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
-			[
-				CUI::MakeKeyHint(Keys({ TEXT("<"), TEXT(">") }), LOCTEXT("HintChange", "Change"), false)
-			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 			[
-				CUI::MakeKeyHint(Keys({ TEXT("ESC") }), LOCTEXT("HintClose", "Close"), false)
+				SNew(SOverlay)
+				+ SOverlay::Slot().VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox).Visibility(ShowFor(false))
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("TAB") }), LOCTEXT("HintTab", "Section"), false)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("^"), TEXT("v") }), LOCTEXT("HintSelect", "Select"), false)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("<"), TEXT(">") }), LOCTEXT("HintChange", "Change"), false)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("ESC") }), LOCTEXT("HintClose", "Close"), false)
+					]
+				]
+				+ SOverlay::Slot().VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox).Visibility(ShowFor(true))
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 18, 0)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("LEFT"), TEXT("RIGHT") }), LOCTEXT("WheelSelect", "Paddle: select"), false)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 18, 0)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("RIM") }), LOCTEXT("WheelChange", "Turn: change"), false)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 18, 0)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("BOTH PADDLES") }), LOCTEXT("WheelTab", "Section"), false)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						CUI::MakeKeyHint(Keys({ TEXT("HOLD BOTH") }), LOCTEXT("WheelClose", "Close"), false)
+					]
+				]
 			]
-			+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNullWidget::NullWidget ]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNullWidget::NullWidget ];
+		if (InArgs._OnMainMenu.IsBound())
+		{
+			const FSimpleDelegate MainMenu = InArgs._OnMainMenu;
+			StaticCastSharedRef<SHorizontalBox>(Footer)->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
 			[
-				CUI::MakeXPButton(LOCTEXT("Resume", "Resume"), Close, true)
+				CUI::MakeXPButton(LOCTEXT("MainMenu", "Main menu"), FOnClicked::CreateLambda([MainMenu]()
+				{
+					MainMenu.ExecuteIfBound();
+					return FReply::Handled();
+				}))
 			];
+		}
+		StaticCastSharedRef<SHorizontalBox>(Footer)->AddSlot().AutoWidth().VAlign(VAlign_Center)
+		[
+			CUI::MakeXPButton(InArgs._bFromLaunch ? LOCTEXT("Back", "Back") : LOCTEXT("Resume", "Resume"), Close, true)
+		];
 		TSharedRef<SWidget> Content = SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 			[
@@ -305,14 +375,14 @@ public:
 			]
 			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(0, 0, 0, 40)
 			[
-				SNew(SBox).WidthOverride(780 + 32)
+				SNew(SBox).WidthOverride(1200 + 32)     // (five tabs, and the wheel's key hints next to Main menu / Resume)
 				[
 					CUI::MakeXPWindow(LOCTEXT("Title", "Settings"), Content, TEXT("icon_cog"), Close)
 				]
 			]
 			+ SOverlay::Slot().VAlign(VAlign_Bottom)
 			[
-				CUI::MakeTaskbar(LOCTEXT("StartLabel", "forza-MIT"), TaskButton, InArgs._TrayText)
+				CUI::MakeTaskbar(LOCTEXT("StartLabel", "Forza @ MIT"), TaskButton, InArgs._TrayText)
 			]
 		];
 		SetTab(0);
@@ -470,11 +540,18 @@ private:
 			R.Set(Next);
 			if (UCambridgeGameUserSettings* S = UCambridgeGameUserSettings::Get())
 			{
-				// not ApplySettings(): that also re-applies the saved window size / mode (a menu click resized the
-				// window) and writes the ini on every press. Everything in this menu is a non-resolution setting;
-				// the settings are saved when the menu closes
-				FGlobalComponentRecreateRenderStateContext Recreate;    // one render-state rebuild for a preset change
-				S->ApplyNonResolutionSettings();
+				if (R.Tab == SoundTab)
+				{
+					S->ApplySound();     // (no render-state rebuild for a volume)
+				}
+				else
+				{
+					// not ApplySettings(): that also re-applies the saved window size / mode (a menu click resized the
+					// window) and writes the ini on every press. Everything in this menu is a non-resolution setting;
+					// the settings are saved when the menu closes
+					FGlobalComponentRecreateRenderStateContext Recreate;    // one render-state rebuild for a preset change
+					S->ApplyNonResolutionSettings();
+				}
 			}
 		}
 	}
@@ -550,9 +627,10 @@ void UCambridgeMenuSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UCambridgeMenuSubsystem::OnApplicationActivationChanged(bool bActive)
 {
-	if (bActive || IsMenuOpen())
+	const UCambridgeLaunchSubsystem* Launch = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCambridgeLaunchSubsystem>() : nullptr;
+	if (bActive || IsMenuOpen() || (Launch && Launch->IsOpen()))
 	{
-		return;
+		return;       // (the launch menu is a menu already: the car is parked there)
 	}
 	UGameViewportClient* Viewport = GetGameInstance() ? GetGameInstance()->GetGameViewportClient() : nullptr;
 	UWorld* World = Viewport ? Viewport->GetWorld() : nullptr;
@@ -611,12 +689,18 @@ void UCambridgeMenuSubsystem::TickWheelNavigation()
 	{
 		Menu->OnKeyDown(FGeometry(), FKeyEvent(Key, FModifierKeysState(), 0, false, 0, 0));
 	};
-	const bool bUp = W->ConsumeDownshift();
-	const bool bDown = W->ConsumeUpshift();
-	const bool bStart = W->ConsumeStart();
-	if (bUp && !bDown) { Press(EKeys::Up); }
-	if (bDown && !bUp) { Press(EKeys::Down); }
-	if (bStart) { Press(EKeys::Tab); }
+	// paddles: left up, right down; both tapped (the wheel's start) = next section, both held = close
+	switch (W->ConsumeMenuAction())
+	{
+	case EWheelMenuAction::Up: Press(EKeys::Up); break;
+	case EWheelMenuAction::Down: Press(EKeys::Down); break;
+	case EWheelMenuAction::Go: Press(EKeys::Tab); break;
+	case EWheelMenuAction::Back:
+		UE_LOG(LogTemp, Display, TEXT("settings: closed by the wheel (both paddles held)"));
+		Press(EKeys::BackSpace);
+		return;
+	default: break;
+	}
 	const float Rim = W->GetState().SteerDeg;
 	if (!bRimArmed)
 	{
@@ -686,13 +770,27 @@ void UCambridgeMenuSubsystem::ShowTab(int32 Tab)
 
 void UCambridgeMenuSubsystem::ToggleMenu()
 {
+	UCambridgeLaunchSubsystem* Launch = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCambridgeLaunchSubsystem>() : nullptr;
 	if (IsMenuOpen())
 	{
 		CloseMenu();
 	}
+	else if (Launch && Launch->IsOpen())
+	{
+		Launch->Back();         // the launch menu is the top level: Esc only leaves its event list
+	}
 	else
 	{
 		OpenMenu();
+	}
+}
+
+void UCambridgeMenuSubsystem::GoToMainMenu()
+{
+	CloseMenu();
+	if (UCambridgeLaunchSubsystem* Launch = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCambridgeLaunchSubsystem>() : nullptr)
+	{
+		Launch->Show();
 	}
 }
 
@@ -710,8 +808,19 @@ void UCambridgeMenuSubsystem::OpenMenu()
 	{
 		return;
 	}
+	// over the launch menu (its Options): not paused, the map keeps streaming behind both; Back returns to it
+	const UCambridgeLaunchSubsystem* Launch = GetGameInstance()->GetSubsystem<UCambridgeLaunchSubsystem>();
+	bOpenedFromLaunch = Launch && Launch->IsOpen();
+	const bool bMainMenuButton = !bOpenedFromLaunch && bEnabled && UCambridgeLaunchSubsystem::IsLaunchFlowEnabled();
 	TSharedRef<SCambridgeMenu> Menu = SNew(SCambridgeMenu)
 		.OnClose(FSimpleDelegate::CreateUObject(this, &UCambridgeMenuSubsystem::CloseMenu))
+		.OnMainMenu(bMainMenuButton ? FSimpleDelegate::CreateUObject(this, &UCambridgeMenuSubsystem::GoToMainMenu) : FSimpleDelegate())
+		.bFromLaunch(bOpenedFromLaunch)
+		.bWheel_Lambda([this]()
+		{
+			const UCambridgeWheelSubsystem* W = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCambridgeWheelSubsystem>() : nullptr;
+			return W && W->IsActive();
+		})
 		.TrayText_UObject(this, &UCambridgeMenuSubsystem::GetTrayText);
 	MenuWidget = Menu;
 	Viewport->AddViewportWidgetContent(Menu, 100);
@@ -721,7 +830,10 @@ void UCambridgeMenuSubsystem::OpenMenu()
 		Mode.SetWidgetToFocus(Menu);
 		PC->SetInputMode(Mode);
 		PC->SetShowMouseCursor(true);
-		UGameplayStatics::SetGamePaused(PC, true);
+		if (!bOpenedFromLaunch)
+		{
+			UGameplayStatics::SetGamePaused(PC, true);
+		}
 	}
 	FSlateApplication::Get().SetKeyboardFocus(Menu);
 }
@@ -737,12 +849,18 @@ void UCambridgeMenuSubsystem::CloseMenu()
 		Viewport->RemoveViewportWidgetContent(MenuWidget.ToSharedRef());
 	}
 	MenuWidget.Reset();
-	if (APlayerController* PC = GetGameInstance() ? GetGameInstance()->GetFirstLocalPlayerController() : nullptr)
+	UCambridgeLaunchSubsystem* Launch = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCambridgeLaunchSubsystem>() : nullptr;
+	if (bOpenedFromLaunch && Launch && Launch->IsOpen())
+	{
+		Launch->RestoreFocus();       // back to the launch menu (the game was never paused)
+	}
+	else if (APlayerController* PC = GetGameInstance() ? GetGameInstance()->GetFirstLocalPlayerController() : nullptr)
 	{
 		PC->SetInputMode(FInputModeGameOnly());
 		PC->SetShowMouseCursor(false);
 		UGameplayStatics::SetGamePaused(PC, false);
 	}
+	bOpenedFromLaunch = false;
 	// (automated runs - shot tours opening the menu with cr.Menu - never write the player's settings)
 	if (UCambridgeGameUserSettings* S = bEnabled ? UCambridgeGameUserSettings::Get() : nullptr)
 	{

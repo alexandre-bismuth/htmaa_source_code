@@ -1,4 +1,5 @@
 #include "MinimapSubsystem.h"
+#include "CambridgeLaunchSubsystem.h"
 
 #include "CambridgeGameUserSettings.h"
 #include "CambridgeMenuSubsystem.h"
@@ -1248,6 +1249,10 @@ void UMinimapSubsystem::OpenFullMap()
 	if (const UCambridgeMenuSubsystem* Menu = GI ? GI->GetSubsystem<UCambridgeMenuSubsystem>() : nullptr; Menu && Menu->IsMenuOpen())
 	{
 		return;     // the menu unpauses on close: never have both open
+	}
+	if (UCambridgeLaunchSubsystem::IsLaunchMenuOpen(World))
+	{
+		return;     // (M on the launch menu)
 	}
 	FVector2D Center = MapBounds.GetCenter();
 	float Yaw, Kmh;

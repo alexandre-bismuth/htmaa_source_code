@@ -11,5 +11,6 @@ public class CambridgeRacerEditorTarget : TargetRules
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		ExtraModuleNames.Add("CambridgeRacer");
+		ExtraModuleNames.Add("CambridgeUI");
 	}
 }

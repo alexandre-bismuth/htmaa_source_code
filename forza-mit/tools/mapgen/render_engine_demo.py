@@ -7,13 +7,20 @@ Output: data/processed/common/audio/demo/
           sti_demo_low.wav        just the idle and the low-rev blips
           sti_demo_unlocked.wav   the same drive with the loops' crank lock deliberately broken
                                   (what it would sound like if UE restarted silent loops)
+          sti_demo_reverse.wav    keyboard reverse: brake key held from a standstill to the 45 km/h reverse
+                                  limit, then released
           *.png                   spectrogram, rpm/load/voice-gain traces, loop checks
 
 Mixer: class Mixer is a line-by-line port of UStiEngineAudio::TickComponent
 (CambridgeRacer/Source/CambridgeRacer/Impreza/StiEngineAudio.cpp): same constants, same order of
 operations, same 60 Hz-ish tick. Voices are emulated like UE's mixer sources: they all start at
-sample 0 in BeginPlay, play at the commanded pitch (clamped to 0.4..2.0, linear-interpolating
-resampler) and their volume/pitch ramp linearly across each tick.
+sample 0 in BeginPlay, play at the commanded pitch (clamped to the global pitch range, linear-interpolating
+resampler) and their volume/pitch ramp linearly across each tick. Like UE's FMixerSource::UpdateVolume, a
+voice's volume is clamped to MAX_VOLUME after the platform headroom and a NaN volume plays at MAX_VOLUME;
+the crossfade weights are computed in float32 like the C++ (in float, cos(HALF_PI) is negative).
+Level: on the Mac the game outputs mix x UE_OUT_GAIN per channel (PlatformHeadroomDB -6 dB x the mono 2D
+upmix 0.5; measured in-game with UAudioMixerBlueprintLibrary::StartRecordingOutput). main() prints that
+in-game peak; the demo WAVs themselves are normalised to -1 dBFS.
 Car: a small longitudinal model with the game's torque curve, gearbox, boost model
 (AImprezaSTi::UpdateEngine) and Chaos-style gear changes (0.25 s in neutral; the engine flares
 with the throttle held, which the mixer must hide).
@@ -50,7 +57,18 @@ SHIFT_RPM_FALL = 4000.0
 POP_VOLUME = 0.40
 WHISTLE_VOLUME = 0.0093   # whistle + blow-off -4.2 dB (round 3: "25 % quieter")
 BLOWOFF_VOLUME = 0.124
-MASTER_VOLUME = 2.0
+WHISTLE_RPM_FROM, WHISTLE_RPM_TO, WHISTLE_RPM_GAIN_MAX = 4750.0, 7400.0, 3.1   # whistle ~10 dB under the engine's band above 4750
+MASTER_VOLUME = 2.4         # StiEngineAudio MasterVolume (2.0 until 2026-10-08), x the player's engine volume (1.0)
+F32_HALF_PI = np.float32(1.57079632679)      # UE_HALF_PI
+# UE output stage (Mac): per-voice volume x headroom, clamped to MAX_VOLUME (NaN -> MAX_VOLUME), x mono 2D upmix
+UE_HEADROOM, UE_MONO_UPMIX, UE_MAX_VOLUME = 0.5, 0.5, 4.0
+UE_OUT_GAIN = UE_HEADROOM * UE_MONO_UPMIX
+
+
+def ue_voice_volume(vol):
+    """Mixer-unit volume as UE plays it: clamp(vol x headroom, 0, MAX_VOLUME) / headroom, NaN -> MAX_VOLUME."""
+    vmax = UE_MAX_VOLUME / UE_HEADROOM
+    return np.where(np.isnan(vol), vmax, np.clip(vol, 0.0, vmax))
 
 
 def finterp_to(cur, target, dt, speed):
@@ -85,7 +103,7 @@ class Voice:
         self.pos, self.playing = 0.0, True
 
     def render(self, n):
-        vol = np.linspace(self.vol_prev, self.vol, n, endpoint=False)
+        vol = ue_voice_volume(np.linspace(self.vol_prev, self.vol, n, endpoint=False))
         pitch = np.clip(np.linspace(self.pitch_prev, self.pitch, n, endpoint=False), *self.pitch_range)
         self.vol_prev, self.pitch_prev = self.vol, self.pitch
         if not self.playing:
@@ -156,8 +174,12 @@ class Mixer:
         a.play()
         self.last_pop = now
 
-    def tick(self, dt, now, rpm_engine, throttle, boost, gear, target_gear):
+    def tick(self, dt, now, rpm_engine, throttle, boost, gear, target_gear, brake=0.0, reverse_as_brake=True):
         rpms = self.rpms
+        # the pedal that drives the car: in keyboard reverse (Chaos bReverseAsBrake) the brake key
+        if gear < 0 and reverse_as_brake:
+            throttle = max(throttle, brake)
+        throttle = min(max(throttle, 0.0), 1.0)
         # crank lock: integrate each loop's phase error over the last tick
         for i in range(len(rpms)):
             self.phase_err[i] = wrap_cycles(self.phase_err[i] + (self.voice_pitch[i] * rpms[i] - self.lock_rpm) / 120.0 * dt)
@@ -200,11 +222,16 @@ class Mixer:
             lo += 1
         t = min(max((self.smooth_rpm - rpms[lo]) / float(rpms[lo + 1] - rpms[lo]), 0.0), 1.0)
         u = min(max((t - XFADE_START) / (XFADE_END - XFADE_START), 0.0), 1.0)
-        on_gain = self.smooth_load ** LOAD_CURVE
-        off_gain = (1.0 - self.smooth_load) ** LOAD_CURVE
+        # float32 like the C++, and max(0, .) before the power: cosf(UE_HALF_PI) = -4.4e-8 -> NaN otherwise
+        a = np.float32(u) * F32_HALF_PI
+        w_lo = float(np.power(np.maximum(np.cos(a), np.float32(0.0)), np.float32(XFADE_SHAPE)))
+        w_hi = float(np.power(np.maximum(np.sin(a), np.float32(0.0)), np.float32(XFADE_SHAPE)))
+        load = min(max(self.smooth_load, 0.0), 1.0)
+        on_gain = load ** LOAD_CURVE
+        off_gain = (1.0 - load) ** LOAD_CURVE
         weights = []
         for i in range(len(rpms)):
-            w = math.cos(u * math.pi / 2) ** XFADE_SHAPE if i == lo else (math.sin(u * math.pi / 2) ** XFADE_SHAPE if i == lo + 1 else 0.0)
+            w = w_lo if i == lo else (w_hi if i == lo + 1 else 0.0)
             p = self.smooth_rpm / rpms[i]
             if w <= 0.0:
                 p *= 1.0 - RELOCK_GAIN * self.phase_err[i]
@@ -225,7 +252,9 @@ class Mixer:
             if self.rng.random() < rate * dt and now - self.last_pop > 0.07:
                 self.fire_pop(0.5 + 0.5 * rpm_factor, now)
 
-        self.whistle.vol = self.master * WHISTLE_VOLUME * boost * boost * (0.3 + 0.7 * throttle)
+        rpm_x = min(max((self.smooth_rpm - WHISTLE_RPM_FROM) / (WHISTLE_RPM_TO - WHISTLE_RPM_FROM), 0.0), 1.0)
+        whistle_rpm_gain = 1.0 + (WHISTLE_RPM_GAIN_MAX - 1.0) * rpm_x * rpm_x
+        self.whistle.vol = self.master * WHISTLE_VOLUME * whistle_rpm_gain * boost * boost * (0.3 + 0.7 * throttle)
         self.whistle.pitch = 0.75 + 0.45 * boost + 0.1 * self.smooth_rpm / 8000.0
         if self.prev_throttle > 0.6 and throttle < 0.2 and boost > 0.45 and now - self.last_blowoff > 0.8:
             self.last_blowoff = now
@@ -236,6 +265,7 @@ class Mixer:
         self.prev_throttle = throttle
         self.log.append((now, rpm_engine, self.smooth_rpm, throttle, self.smooth_load, boost, gear, weights,
                          [self.phase_err[i] for i in range(len(rpms))]))
+        self.nan_volumes = getattr(self, "nan_volumes", 0) + sum(1 for v in self.voices if v.vol != v.vol)
 
     def render(self, n):
         engine = sum(v.render(n) for v in self.engine_voices)
@@ -246,6 +276,7 @@ class Mixer:
 TORQUE = np.array([(0, 110), (1000, 130), (2000, 190), (2500, 250), (3000, 320), (3500, 360), (4000, 373), (4500, 370),
                    (5000, 360), (5500, 345), (6000, 327), (6400, 307), (7000, 280), (7500, 258), (8000, 235)], float)
 GEARS = [3.636, 2.375, 1.761, 1.346, 1.062, 0.842]
+REVERSE = 3.545
 FINAL, WHEEL_R, MASS = 3.9, 0.317, 1545.0
 GEAR_CHANGE_TIME, MAX_RPM, IDLE_RPM, CHANGE_UP = 0.25, 8000.0, 925.0, 7400.0
 
@@ -268,18 +299,24 @@ class Car:
             else:
                 self.gear, self.change_left = 0, GEAR_CHANGE_TIME
 
+    def ratio(self):
+        return (REVERSE if self.gear < 0 else GEARS[self.gear - 1]) * FINAL
+
     def step(self, dt, throttle, brake, auto_up, auto_top=3):
         if self.gear != self.target_gear:
             self.change_left -= dt
             if self.change_left <= 0:
                 self.gear = self.target_gear
-        # boost (AImprezaSTi::UpdateEngine)
+        # boost (AImprezaSTi::UpdateEngine); keyboard reverse: the brake key drives (Chaos bReverseAsBrake)
+        if self.gear < 0:
+            throttle, brake = max(throttle, brake), 0.0
         eng_rpm = self.rpm
-        if self.gear == 1 and self.rpm < LAUNCH_RPM and throttle > 0.05:
+        if self.gear in (1, -1) and self.rpm < LAUNCH_RPM and throttle > 0.05:
             eng_rpm = self.rpm + (LAUNCH_RPM - self.rpm) * throttle
         tau = np.interp(eng_rpm, [2000, 4500], [1.1, 0.35]) if throttle > self.boost else 0.15
         self.boost += (throttle - self.boost) * (1 - math.exp(-dt / tau))
-        tq = torque(eng_rpm) * (0.55 + 0.45 * self.boost) * throttle
+        reverse_limit = min(max((45.0 - self.v * 3.6) / 5.0, 0.0), 1.0) if self.gear < 0 else 1.0
+        tq = torque(eng_rpm) * (0.55 + 0.45 * self.boost) * throttle * reverse_limit
         if self.gear == 0:      # free revving (neutral or mid-shift): part throttle is plenty unloaded
             tq = torque(eng_rpm) * 0.7 * min(1.0, 1.6 * throttle)
             friction = 15.0 + 0.004 * self.rpm
@@ -288,15 +325,15 @@ class Car:
             self.rpm = min(max(self.rpm, IDLE_RPM * 0.98), MAX_RPM)
             drive = 0.0
         else:
-            ratio = GEARS[self.gear - 1] * FINAL
+            ratio = self.ratio()
             if self.rpm >= MAX_RPM - 1:
                 tq = min(tq, 0.0)
             drive = tq * ratio * 0.88 / WHEEL_R - (0.02 * self.rpm * 4 / WHEEL_R if throttle < 0.05 else 0.0)
         resist = 0.4 * self.v ** 2 + 230.0 + brake * 9000.0
-        m_eff = MASS * (1.04 + (0.0025 * (GEARS[self.gear - 1] * FINAL) ** 2 if self.gear > 0 else 0))
-        self.v = max(0.0, self.v + (drive - resist * (1 if self.v > 0 else 0)) / m_eff * dt)
-        if self.gear > 0:
-            self.rpm = min(max(self.v / WHEEL_R * GEARS[self.gear - 1] * FINAL * 60 / (2 * math.pi), IDLE_RPM), MAX_RPM)
+        m_eff = MASS * (1.04 + (0.0025 * self.ratio() ** 2 if self.gear != 0 else 0))
+        self.v = max(0.0, self.v + (drive - resist * (1 if self.v > 0 else 0)) / m_eff * dt)   # (speed: backwards in reverse)
+        if self.gear != 0:
+            self.rpm = min(max(self.v / WHEEL_R * self.ratio() * 60 / (2 * math.pi), IDLE_RPM), MAX_RPM)
             if auto_up and self.rpm >= CHANGE_UP and self.gear < auto_top and self.target_gear == self.gear:
                 self.set_gear(self.gear + 1)
 
@@ -340,6 +377,28 @@ def drive():
     return out
 
 
+def drive_reverse():
+    """Keyboard reverse: idle, brake key held from a standstill (Chaos: reverse gear, the brake drives; the raw
+    throttle stays 0) up to the 45 km/h reverse limit, then released. States carry the brake for the mixer."""
+    car = Car()
+    out = []
+    t = 0.0
+
+    def hold(seconds, brake):
+        nonlocal t
+        end = t + seconds
+        while t < end - 1e-9:
+            car.step(TICK, 0.0, brake, False)
+            out.append((t, car.rpm, 0.0, car.boost, car.gear, car.target_gear, car.v, brake))
+            t += TICK
+
+    hold(2.0, 0.0)
+    car.set_gear(-1, immediate=True)
+    hold(6.0, 1.0)
+    hold(3.0, 0.0)
+    return out
+
+
 def load_waves():
     waves = {}
     for p in OUT.glob("*.wav"):
@@ -354,8 +413,8 @@ def render(waves, states, break_lock=False, seed=1, pitch_range=PITCH_RANGE):
     out, eng = [], []
     cycles = [round(len(v.wave) * r / (120.0 * FS)) for v, r in zip(mixer.on, RPMS)]
     mixer.crank_err = []
-    for (t, rpm, th, boost, gear, target, _v) in states:
-        mixer.tick(TICK, t, rpm, th, boost, gear, target)
+    for (t, rpm, th, boost, gear, target, _v, *brake) in states:
+        mixer.tick(TICK, t, rpm, th, boost, gear, target, brake=brake[0] if brake else 0.0)
         y, e = mixer.render(n_tick)
         out.append(y)
         eng.append(e)
@@ -457,9 +516,10 @@ def main():
     y, mixer = render(waves, states)
     y_unlocked, _ = render(waves, states, break_lock=True)
     _, stock = render(waves, states, pitch_range=(0.4, 2.0))
+    y_rev, rev = render(waves, drive_reverse())
     peak = np.abs(y).max()
     gain = 10 ** (-1.0 / 20) / peak                     # demo normalised to -1 dBFS peak
-    for name, sig in (("sti_demo", y), ("sti_demo_unlocked", y_unlocked)):
+    for name, sig in (("sti_demo", y), ("sti_demo_unlocked", y_unlocked), ("sti_demo_reverse", y_rev)):
         wavfile.write(DEMO / f"{name}.wav", FS, (np.clip(sig * gain, -1, 1) * 32767).astype(np.int16))
     low_end = next(i for i, s in enumerate(states) if s[4] == 1)        # up to the launch
     wavfile.write(DEMO / "sti_demo_low.wav", FS, (np.clip(y[: low_end * int(round(TICK * FS))] * gain, -1, 1) * 32767).astype(np.int16))
@@ -470,6 +530,10 @@ def main():
     c, ct = clicks(mixer.engine_only)
     print(f"demo {len(y) / FS:.1f} s; raw mix peak {20 * np.log10(peak):+.1f} dBFS at MasterVolume {MASTER_VOLUME} "
           f"(written at -1 dBFS, gain {20 * np.log10(gain):+.1f} dB)")
+    game = y * UE_OUT_GAIN
+    print(f"in game (Mac, x{UE_OUT_GAIN} per channel): peak {20 * np.log10(np.abs(game).max()):+.1f} dBFS, "
+          f"{np.mean(np.abs(game) > 1.0) * 100:.3f} % of samples over full scale; reverse demo peak "
+          f"{20 * np.log10(np.abs(y_rev).max() * UE_OUT_GAIN):+.1f} dBFS; NaN voice volumes: {mixer.nan_volumes + rev.nan_volumes}")
     print(f"worst loop seam {seam:.2f}; worst click ratio {c:.1f} at {ct:.2f} s; "
           f"max crank-phase mismatch between audible loops {max(errs):.3f} cycles "
           f"(stock 0.4..2.0 pitch clamp: max {max(stock.crank_err):.3f}, "

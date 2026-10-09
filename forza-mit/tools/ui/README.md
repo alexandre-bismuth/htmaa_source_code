@@ -20,6 +20,9 @@ Everything is plain Slate in C++; nothing is an asset.
 | `tools/ui/fetch_fonts.py` | downloads the OFL fonts into `CambridgeRacer/UI/Fonts/` (committed, ~480 KB) |
 | `tools/ui/make_ui_assets.py` | draws every brush into `CambridgeRacer/UI/Generated/` (gitignored: rerun after a clone) and writes `staging/CambridgeUIBrushes.inl` |
 | `tools/ui/make_mockups.py` | renders the approval mockups into `tools/ui/mockups/` from the real brushes and fonts |
+| `tools/ui/make_launch_assets.py` | the launch menu's images into `UI/Generated/` (`launch_bg.png`, `neil_mii.png`) and the startup splash `Content/Splash/Splash.bmp` (all gitignored: rerun after a clone) |
+| `tools/ui/make_neil_mii.py` | Neil (HTMAA's instructor) as a full-body Mii carrying the driver's helmet: SVG drawn in code, rasterised with `rsvg-convert` (`brew install librsvg`); `--all` writes every variant |
+| `tools/ui/make_launch_mockups.py` | the launch menu design options (the game uses design D, the hero layout) |
 | `tools/ui/uidraw.py` | shared SDF drawing, 9-slice and text helpers |
 | `tools/ui/staging/CambridgeUIStyle.h/.cpp` | the `CambridgeUI` Slate style set + widget helpers (not compiled until copied into Source) |
 | `tools/ui/staging/CambridgeUIBrushes.inl` | generated brush / colour table included by the .cpp |
@@ -28,6 +31,7 @@ Everything is plain Slate in C++; nothing is an asset.
 cd tools/ui
 uv run fetch_fonts.py        # only if the fonts are missing
 uv run make_ui_assets.py     # required after every clone (PNGs are gitignored)
+uv run make_launch_assets.py # required after every clone: the launch menu backdrop, Neil, the splash
 uv run make_mockups.py       # optional; backgrounds come from mockups/bg/*.png (copy game screenshots there)
 ```
 
@@ -157,7 +161,9 @@ subsystems plug straight in.
 
 ## Integration status
 
-Integrated: the kit lives in `CambridgeRacer/Source/CambridgeRacer/CambridgeUIStyle.*` (+ `CambridgeUIBrushes.inl`);
+Integrated: the kit lives in its own module, `CambridgeRacer/Source/CambridgeUI/` (`Public/CambridgeUIStyle.h`,
+`Private/CambridgeUIStyle.cpp` + `CambridgeUIBrushes.inl`), loaded in the PreLoadingScreen phase so the launch menu
+(`CambridgeLaunchScreen.*`, same module) can be the engine's loading screen from the moment the game window opens;
 `tools/ui/staging/` keeps the source copies (`make_ui_assets.py` regenerates the staging `.inl`; copy it over when
 brushes change). `CambridgeMenuSubsystem.cpp` (settings window, FPS chip) and `TimeTrialSubsystem.cpp` (whole HUD)
 use it, `FCambridgeUIStyle::Initialize()` runs in `UCambridgeMenuSubsystem::Initialize()`, and `CambridgeRacer.Build.cs`
@@ -166,7 +172,8 @@ stages `UI/Fonts` and `UI/Generated` as runtime dependencies. The notes below de
 ## Integrating (reference)
 
 1. **Copy** `staging/CambridgeUIStyle.h`, `CambridgeUIStyle.cpp` and `CambridgeUIBrushes.inl` into
-   `CambridgeRacer/Source/CambridgeRacer/`. Re-copy the `.inl` whenever `make_ui_assets.py` changes brushes.
+   `CambridgeRacer/Source/CambridgeUI/` (Public / Private). Re-copy the `.inl` whenever `make_ui_assets.py` changes
+   brushes. (The launch menu's `launch_bg` and `neil_mii` brushes are registered by hand after the `.inl` include.)
 2. **Build.cs**: nothing new. The kit uses Slate (public) and SlateCore (private), which are already listed; it
    only includes Slate/SlateCore/Core headers. For **packaged** builds stage the loose files:
    ```csharp
