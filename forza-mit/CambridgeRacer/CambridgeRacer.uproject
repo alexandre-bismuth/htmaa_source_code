@@ -5,6 +5,11 @@
 	"Description": "Cambridge (Harvard-MIT) driving game",
 	"Modules": [
 		{
+			"Name": "CambridgeUI",
+			"Type": "Runtime",
+			"LoadingPhase": "PreLoadingScreen"
+		},
+		{
 			"Name": "CambridgeRacer",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",

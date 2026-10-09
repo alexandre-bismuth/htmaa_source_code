@@ -86,6 +86,10 @@ POST_CLEAR_M = 2.0         # m: racing-line points keep this far from a prop (po
                            # segments between them then pass 1.5 m clear or more
 TRIGGER_MAX = 20.0         # m: how far a checkpoint trigger reaches across the road from the gate centre (each side)
 JUNCTION_SPREAD_M = 40.0   # two streets touching at points further apart than this meet at 2 junctions
+# free roam starts at the HTMAA lectures (MIT Media Lab, E14, 75 Amherst St: the landmark's address point), on the
+# street in front of the entrance, in the right-hand lane with the building on the right (the launch menu's
+# "Launch Open World"), 30 m before it so the building is ahead on the right
+FREE_ROAM = {"street": "Amherst St", "lonlat": (-71.0875001, 42.3602115), "back_m": 30.0}
 
 
 def load(rdir, layer):
@@ -399,6 +403,33 @@ def trigger_span(roads, g):
     return out
 
 
+def free_roam_start(streets, roads, spec=FREE_ROAM):
+    """Spawn point on spec's street nearest spec's address point: heading along the street with the address on the
+    right, in the middle of the right half of the road, a few metres before the address."""
+    from geo import Frame
+    e, n = Frame().to_en(*spec["lonlat"])
+    target = Point(float(e), float(n))
+    line = streets[spec["street"]]
+    if line.geom_type != "LineString":
+        line = min(getattr(linemerge(line), "geoms", [linemerge(line)]), key=lambda g: g.distance(target))
+    s = line.project(target)
+    a, b = line.interpolate(max(0.0, s - 3.0)), line.interpolate(min(line.length, s + 3.0))
+    h = math.atan2(b.y - a.y, b.x - a.x)
+    p = line.interpolate(s)
+    along = 1.0
+    # the address on the right: right normal (sin h, -cos h)
+    if (target.x - p.x) * math.sin(h) - (target.y - p.y) * math.cos(h) < 0:
+        h += math.pi
+        along = -1.0
+    p = line.interpolate(min(max(s - along * spec["back_m"], 0.0), line.length))
+    left, right = road_extent(roads, (p.x, p.y), h)
+    # offsets to the right of the centreline: the road spans [-left, right]; the middle of its right half
+    off = (3.0 * right - left) / 4.0
+    at = lambda o: (p.x + o * math.sin(h), p.y - o * math.cos(h))
+    off = next((o for o in (off, off * 0.5, 0.0) if roads.contains(Point(*at(o)))), 0.0)
+    return {"en": at(off), "heading": h, "width": 0}
+
+
 def to_ue(g):
     e, n = g["en"]
     yaw = math.degrees(math.atan2(-math.sin(g["heading"]), math.cos(g["heading"])))   # UE yaw (Y = south)
@@ -473,7 +504,9 @@ def main(region):
 
     dest = ROOT / "CambridgeRacer/Tracks"
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / f"{region}.json").write_text(json.dumps({"region": region, "tracks": out}, indent=1))
+    free = free_roam_start(streets, roads)
+    print(f"free roam start: {FREE_ROAM['street']} at e {free['en'][0]:.1f} n {free['en'][1]:.1f}, heading {math.degrees(free['heading']):.1f} deg")
+    (dest / f"{region}.json").write_text(json.dumps({"region": region, "free_roam": to_ue(free) | {"z": 60.0}, "tracks": out}, indent=1))
 
     import matplotlib
     matplotlib.use("Agg")

@@ -1,11 +1,21 @@
-# forza-MIT
+# Forza @ MIT
 
-A driving game set on the real MIT (and later Harvard) campus in Cambridge, MA, built in
-Unreal Engine 5.8 for an HTMAA final project. Free roam plus solo time trials in a 2002 Subaru
+A driving game set on the real MIT and Harvard campuses in Cambridge, MA, built in
+Unreal Engine 5.8 for an HTMAA final project (repository: forza-MIT). Free roam plus solo time trials in a 2002 Subaru
 Impreza WRX STi (GDB-B "bugeye"), later to be driven with a custom wheel, pedals and force feedback.
+
+## Play
+    ~/UE_5.8/Engine/Binaries/Mac/UnrealEditor ~/dev/forza-mit/CambridgeRacer/CambridgeRacer.uproject -game -FullScreen
+
+The launch menu comes up while the engine starts (it is the loading screen, then the live menu while the map
+keeps streaming behind it): **Launch Open World** (free roam from the HTMAA lectures, the Media Lab on Amherst St),
+**Timed Race** (the 12 events) and **Options** (graphics, driving assists, wheel, controls). In game, Esc opens the
+settings with a **Main menu** button. `-NoLaunchMenu` starts straight in the car; test runs (`-ShotTour`,
+`-DriveTest`, `-TimeTrialAuto`) skip the menu and start on Mass Ave as before (`-LaunchMenu` forces it).
 
 ## Layout
 - `CambridgeRacer/` — UE 5.8 C++ project (from the Vehicle template). Car: `Source/CambridgeRacer/Impreza/`.
+  `Source/CambridgeUI/` is the UI kit and the launch menu (its own module: it is the engine's loading screen).
 - `tools/mapgen/` — Python pipeline: Cambridge GIS data -> world-frame meshes.
 - `tools/unreal/` — headless Unreal scripts: import meshes, build levels, drive tests.
 
@@ -18,7 +28,7 @@ Content/ and data/ are not in git; every step below is headless and rerunnable. 
     # 0. engine template content + the C++ module (the Unreal Python steps call UCambridgeWorldTools)
     tools/unreal/bootstrap_content.sh
     ~/UE_5.8/Engine/Build/BatchFiles/Mac/Build.sh CambridgeRacerEditor Mac Development \
-        -Project=$PWD/CambridgeRacer/CambridgeRacer.uproject -WaitMutex
+        -Project=$PWD/CambridgeRacer/CambridgeRacer.uproject -WaitMutex   # (add -NoUBA if the PCH build fails)
 
     # 1. downloads (data/raw, cached) and generated data (data/processed)
     cd tools/mapgen
@@ -47,7 +57,8 @@ Content/ and data/ are not in git; every step below is headless and rerunnable. 
     tools/unreal/build_level.sh mit_core
     tools/unreal/build_test_track.sh
     tools/unreal/import_car.sh
-    tools/unreal/build_game_assets.sh                  # UI assets: see tools/ui/README.md
+    tools/unreal/build_game_assets.sh
+    (cd tools/ui && uv run make_ui_assets.py && uv run make_launch_assets.py)   # UI: see tools/ui/README.md
 
 Rendered check: `tools/unreal/shot_tour.sh mit_core [shots.json]` (screenshots and timings in
 CambridgeRacer/Saved/Screenshots/ShotTour/).

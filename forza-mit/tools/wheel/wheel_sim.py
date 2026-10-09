@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pretend to be the home-built wheel (docs/wheel_protocol.md) on a pseudo-terminal.
 
-    python3 tools/wheel/wheel_sim.py [--script drive|idle|torture] [--seconds 60] [--link PATH] [--unplug-at S]
+    python3 tools/wheel/wheel_sim.py [--script drive|idle|torture|menu] [--seconds 60] [--link PATH] [--unplug-at S]
 
 Prints the pty path; start the game with -WheelPort=<that path> (add -WheelLog for a 1 Hz status
 line in the log). The simulator streams "W <steer_centideg> <throttle> <brake> <buttons>" at 500 Hz
@@ -10,6 +10,11 @@ input path (serial thread, calibration, paddles, FFB) is testable without the ha
 
 Script "drive": pedal calibration sweep, launch in 1st, paddle upshifts at 2.5 / 5 / 7.5 s,
 a slalom (+-90 deg of rim), brake to a stop with a downshift.
+Script "menu": the launch menu and the settings by the paddles only (the wheel has no start button: both paddles
+tapped together are its start, held 1 s are back / close; start the game with -LaunchMenu in a test run): from 8 s
+after the game connects (the menu is up by then) right paddle, both tapped (Timed Race list), right paddle, both held
+(back), right paddle, both tapped (Options: the settings), right paddle, both held (close), left paddle twice, both
+tapped: the log must end with "launch: open world".
 Script "torture": the same drive, with damaged input mixed in (noise bytes, short / long / out-of-range /
 non-numeric lines, lines split across writes). The game must drop all of it: its -WheelLog status should
 read the same pedal percentages as with "drive" (e.g. T 87% while the script holds 0.85 throttle).
@@ -51,6 +56,23 @@ def drive(t):
     return 0.0, 0.0, 0.0, buttons
 
 
+# (t, buttons, seconds held): 1 right (upshift) paddle, 2 left (downshift) paddle, 3 both
+MENU_PRESSES = [(8.0, 1, 0.25), (9.5, 3, 0.25), (11.0, 1, 0.25), (12.5, 3, 1.0), (14.5, 1, 0.25), (16.0, 3, 0.25),
+                (17.5, 1, 0.25), (19.0, 3, 1.0), (21.0, 2, 0.25), (22.5, 2, 0.25), (24.0, 3, 0.25)]
+
+
+def menu(t):
+    """Launch menu / settings navigation with the wheel's buttons (MENU_PRESSES); the rim and pedals rest."""
+    if t < 1.0:
+        s = math.sin(math.pi * t)
+        return 0.0, s, s, 0
+    buttons = 0
+    for at, b, held in MENU_PRESSES:
+        if at <= t < at + held:
+            buttons |= b
+    return 0.0, 0.0, 0.0, buttons
+
+
 GARBAGE = [
     b"\x00\xff\xfe garbage \x80\x81\n",
     b"W 1 2 3\n",                          # too few fields
@@ -85,7 +107,7 @@ def open_pty(link):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--script", default="drive", choices=["drive", "idle", "torture"])
+    ap.add_argument("--script", default="drive", choices=["drive", "idle", "torture", "menu"])
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--link", default="")
     ap.add_argument("--unplug-at", type=float, default=-1.0)
@@ -131,7 +153,8 @@ def main():
             buf = b""
             print(f"t={time.time() - t0:5.1f}s  REPLUG {path} (link {args.link or '-'})", flush=True)
             continue
-        steer, thr, brk, buttons = drive(t) if args.script in ("drive", "torture") else (0.0, 0.0, 0.0, 0)
+        steer, thr, brk, buttons = (drive(t) if args.script in ("drive", "torture")
+                                    else menu(t) if args.script == "menu" else (0.0, 0.0, 0.0, 0))
         msg = f"W {int(round(steer * 100))} {int(thr * 4095)} {int(brk * 4095)} {buttons}\n".encode()
         try:
             if args.script == "torture" and rng.random() < 0.05:

@@ -56,6 +56,7 @@ namespace
 		{
 			FCompositeSubFont& Digits = CuiPixelFont->SubTypefaces[CuiPixelFont->SubTypefaces.AddDefaulted()];
 			Digits.CharacterRanges.Add(FInt32Range::Inclusive(0x30, 0x39));   // 0-9 only, like the website's unicode-range
+			Digits.CharacterRanges.Add(FInt32Range::Inclusive(0x40, 0x40));   // and @ (Forza @ MIT): Silkscreen's reads as an e
 			Digits.ScalingFactor = CuiPixelDigitScale;
 			Digits.Typeface.AppendFont(TEXT("Regular"), CuiFontPath(TEXT("PressStart2P-Regular.ttf")), EFontHinting::None, EFontLoadingPolicy::LazyLoad);
 			Digits.Typeface.AppendFont(TEXT("Bold"), CuiFontPath(TEXT("PressStart2P-Regular.ttf")), EFontHinting::None, EFontLoadingPolicy::LazyLoad);
@@ -208,6 +209,10 @@ TSharedRef<FSlateStyleSet> FCambridgeUIStyle::Create()
 #define CUI_COLOR(Name, R, G, B) \
 	Style->Set(Name, FLinearColor(FColor(R, G, B)));
 #include "CambridgeUIBrushes.inl"
+	// the launch menu (tools/ui/make_launch_assets.py): the blurred car backdrop (2560 x 1440 texture) and Neil
+	// (a 1000 x 1400 texture drawn 429 x 600)
+	CUI_IMAGE("launch_bg", 1920, 1080)
+	CUI_IMAGE("neil_mii", 429, 600)
 #undef CUI_BOX
 #undef CUI_IMAGE
 #undef CUI_TILE

@@ -4,6 +4,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/RunnableThread.h"
@@ -36,6 +37,18 @@ namespace
 	constexpr double ReconnectDelay = 1.0;     // s between connection attempts (hot-plug)
 	constexpr double MaxEdgeAge = 0.5;         // s: older paddle / button presses are dropped
 	constexpr int32 MaxLine = 120;             // longer lines are garbage
+
+	// test: drive the wheel's buttons / throttle from a shot tour step (a wheel or wheel_sim.py must be connected)
+	FAutoConsoleCommandWithWorldAndArgs WheelTestCmd(TEXT("cr.Wheel.Test"),
+		TEXT("Test: cr.Wheel.Test <seconds> <throttle 0..1> <buttons: 1 right paddle, 2 left, 3 both, 4 start> (needs a connected wheel or wheel_sim.py)"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+			if (UCambridgeWheelSubsystem* W = GI ? GI->GetSubsystem<UCambridgeWheelSubsystem>() : nullptr; W && Args.Num() >= 3)
+			{
+				W->SetTestInput(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atoi(*Args[2]));
+			}
+		}));
 
 	bool ValidPedalRange(int32 Min, int32 Max)
 	{
@@ -136,7 +149,7 @@ FWheelInputState UCambridgeWheelSubsystem::GetState() const
 	FScopeLock L(&Lock);
 	FWheelInputState S;
 	S.SteerDeg = (RawSteer - SteerCentreCentideg) / 100.0f;
-	S.Throttle = Pedal(RawThrottle, CalThrottleMin, CalThrottleMax);
+	S.Throttle = FPlatformTime::Seconds() < TestUntil ? TestThrottle : Pedal(RawThrottle, CalThrottleMin, CalThrottleMax);
 	S.Brake = Pedal(RawBrake, CalBrakeMin, CalBrakeMax);
 	S.bUpshift = (Buttons & 1) != 0;
 	S.bDownshift = (Buttons & 2) != 0;
@@ -155,6 +168,84 @@ bool UCambridgeWheelSubsystem::ConsumeEdge(bool& bEdge, double EdgeTime)
 bool UCambridgeWheelSubsystem::ConsumeUpshift() { return ConsumeEdge(bEdgeUp, EdgeUpTime); }
 bool UCambridgeWheelSubsystem::ConsumeDownshift() { return ConsumeEdge(bEdgeDown, EdgeDownTime); }
 bool UCambridgeWheelSubsystem::ConsumeStart() { return ConsumeEdge(bEdgeStart, EdgeStartTime); }
+
+EWheelMenuAction UCambridgeWheelSubsystem::ConsumeMenuAction()
+{
+	constexpr double ChordWindow = 0.12;     // s: a single paddle waits this long for the other one
+	constexpr double HoldSeconds = 0.8;      // both paddles held this long = Back
+	constexpr double Fresh = 0.25;           // s: a longer gap since the last query = a new screen
+	const double Now = FPlatformTime::Seconds();
+	const bool bNewScreen = Now - LastMenuQuery > Fresh;
+	LastMenuQuery = Now;
+	const bool bEdgeR = ConsumeUpshift();
+	const bool bEdgeL = ConsumeDownshift();
+	const bool bStartPress = ConsumeStart();
+	const FWheelInputState S = GetState();
+	const bool bBoth = S.bUpshift && S.bDownshift;
+	if (bNewScreen)
+	{
+		// (presses made before this screen asked are dropped; paddles already down must be released first)
+		PendingPaddle = 0;
+		bChord = bBoth;
+		ChordSince = Now;
+		bChordHoldFired = true;
+		return EWheelMenuAction::None;
+	}
+	if (bStartPress)
+	{
+		return EWheelMenuAction::Go;
+	}
+	if (bChord)
+	{
+		if (bBoth)
+		{
+			if (!bChordHoldFired && Now - ChordSince >= HoldSeconds)
+			{
+				bChordHoldFired = true;
+				return EWheelMenuAction::Back;
+			}
+			return EWheelMenuAction::None;
+		}
+		const bool bWasHold = bChordHoldFired;     // released: a tap is Go (a hold already went Back)
+		bChord = bChordHoldFired = false;
+		PendingPaddle = 0;
+		return bWasHold ? EWheelMenuAction::None : EWheelMenuAction::Go;
+	}
+	if (bBoth)
+	{
+		bChord = true;
+		ChordSince = Now;
+		bChordHoldFired = false;
+		PendingPaddle = 0;
+		return EWheelMenuAction::None;
+	}
+	if (bEdgeR && bEdgeL)
+	{
+		PendingPaddle = 0;
+		return EWheelMenuAction::Go;          // (both pressed and released between two frames)
+	}
+	if ((bEdgeR || bEdgeL) && PendingPaddle == 0)
+	{
+		PendingPaddle = bEdgeR ? 1 : 2;
+		PendingPaddleAt = Now;
+	}
+	if (PendingPaddle != 0 && Now - PendingPaddleAt >= ChordWindow)
+	{
+		const int32 Paddle = PendingPaddle;
+		PendingPaddle = 0;
+		return Paddle == 1 ? EWheelMenuAction::Down : EWheelMenuAction::Up;
+	}
+	return EWheelMenuAction::None;
+}
+
+void UCambridgeWheelSubsystem::SetTestInput(float Seconds, float Throttle, int32 InButtons)
+{
+	FScopeLock L(&Lock);
+	TestUntil = FPlatformTime::Seconds() + FMath::Max(0.0f, Seconds);
+	TestThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
+	TestButtons = InButtons & 7;
+	UE_LOG(LogWheel, Display, TEXT("wheel: test input %.2f s, throttle %.2f, buttons %d"), Seconds, TestThrottle, TestButtons);
+}
 
 void UCambridgeWheelSubsystem::SetForceFeedback(float Torque)
 {
@@ -390,7 +481,7 @@ void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 		RawSteer = Steer;
 		RawThrottle = Throttle;
 		RawBrake = Brake;
-		Buttons = Btn;
+		Buttons = FPlatformTime::Seconds() < TestUntil ? TestButtons : Btn;     // (cr.Wheel.Test)
 		// pedals calibrate themselves: remember the travel seen this session
 		CalThrottleMin = FMath::Min(CalThrottleMin, RawThrottle);
 		CalThrottleMax = FMath::Max(CalThrottleMax, RawThrottle);

@@ -9,6 +9,8 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "CambridgeGameUserSettings.h"
+#include "CambridgeLaunchSubsystem.h"
+#include "TimeTrialSubsystem.h"
 #include "CambridgeWheelSubsystem.h"
 #include "Misc/CommandLine.h"
 #include "ChaosVehicleWheel.h"
@@ -224,7 +226,13 @@ void AImprezaSTi::Tick(float Delta)
 {
 	// the home-built wheel (when connected) overrides the analog axes before the base pawn applies them
 	UCambridgeWheelSubsystem* Wheel = IsLocallyControlled() ? UCambridgeWheelSubsystem::Get(this) : nullptr;
-	const bool bWheel = Wheel && Wheel->IsActive();
+	// (behind the launch menu the wheel drives the menu, not the parked car, and pushes no force)
+	const bool bMenu = Wheel && Wheel->IsActive() && UCambridgeLaunchSubsystem::IsLaunchMenuOpen(this);
+	if (bMenu)
+	{
+		Wheel->SetForceFeedback(0.0f);
+	}
+	const bool bWheel = Wheel && Wheel->IsActive() && !bMenu;
 	// keyboard / gamepad: holding brake at a standstill reverses. Real pedals: the brake only brakes,
 	// reverse is a downshift past neutral
 	GetChaosVehicleMovement()->bReverseAsBrake = !bWheel;
@@ -466,6 +474,14 @@ void AImprezaSTi::ShiftDown()
 	RequestGear(From, FMath::Max(From - 1, Lowest));
 }
 
+void AImprezaSTi::SetEngineSoundMuted(bool bMuted)
+{
+	if (EngineAudio)
+	{
+		EngineAudio->SetMuted(bMuted);
+	}
+}
+
 void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 {
 	UChaosWheeledVehicleMovementComponent* Move = GetChaosVehicleMovement();
@@ -480,13 +496,18 @@ void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 	// two independent pedals: left-foot braking works
 	DriverThrottle = S.Throttle;
 	Move->SetBrakeInput(S.Brake);
-	if (Wheel.ConsumeUpshift())
+	// (the results window: the paddles pick its buttons, UTimeTrialSubsystem takes them)
+	const UTimeTrialSubsystem* TT = GetWorld() ? GetWorld()->GetSubsystem<UTimeTrialSubsystem>() : nullptr;
+	if (!TT || TT->GetState() != ETimeTrialState::Finished)
 	{
-		ShiftUp();
-	}
-	if (Wheel.ConsumeDownshift())
-	{
-		ShiftDown();
+		if (Wheel.ConsumeUpshift())
+		{
+			ShiftUp();
+		}
+		if (Wheel.ConsumeDownshift())
+		{
+			ShiftDown();
+		}
 	}
 	LastRimDeg = S.SteerDeg;
 }

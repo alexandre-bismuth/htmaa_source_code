@@ -1,7 +1,8 @@
 // The home-built steering wheel / pedals / paddle shifters, over USB CDC serial.
 // Protocol (ASCII lines, see docs/wheel_protocol.md):
 //   device -> game   "W <steer_centideg> <throttle_raw> <brake_raw> <buttons>"   ~500 Hz
-//                    buttons: bit0 upshift paddle, bit1 downshift paddle, bit2 start/menu
+//                    buttons: bit0 upshift paddle, bit1 downshift paddle, bit2 start/menu (optional: this wheel has
+//                    none; both paddles pressed together are its start everywhere)
 //   game -> device   "F <torque_permille>"   -1000..1000, + turns the rim clockwise. Once per frame
 //                    (50-120 Hz, capped at 250 Hz): the firmware should smooth it and do fast damping itself.
 //                    The firmware must drop the motor torque to 0 if no F line came for 100 ms.
@@ -22,6 +23,9 @@
 #include "CambridgeWheelSubsystem.generated.h"
 
 class FRunnableThread;
+
+/** What the wheel's paddles (and start button, if any) mean in a menu: UCambridgeWheelSubsystem::ConsumeMenuAction. */
+enum class EWheelMenuAction : uint8 { None, Up, Down, Go, Back };
 
 /** One decoded sample from the wheel, already calibrated. */
 struct FWheelInputState
@@ -54,6 +58,15 @@ public:
 	bool ConsumeUpshift();
 	bool ConsumeDownshift();
 	bool ConsumeStart();
+	/** Menus (launch menu, settings, results): the wheel has no start button, so both paddles together are its
+	 *  start. One paddle = Up (left) / Down (right), reported after a short wait in case the other one joins (so
+	 *  pressing both never moves the selection first); both paddles tapped = Go (= start), held 0.8 s = Back; a start
+	 *  button, if one is ever added, = Go. Game thread, one caller per frame; a query after a gap (another screen)
+	 *  starts clean (presses made before are dropped). */
+	EWheelMenuAction ConsumeMenuAction();
+	/** Test (cr.Wheel.Test, with a wheel connected: wheel_sim.py --script idle): for Seconds the buttons read Buttons
+	 *  (1 right paddle, 2 left, 4 start) and the throttle reads Throttle (0..1), whatever the device sends. */
+	void SetTestInput(float Seconds, float Throttle, int32 Buttons);
 
 	/** Force feedback for the next frame, -1..1 (+ = clockwise); scaled by the strength setting. */
 	void SetForceFeedback(float Torque);
@@ -118,6 +131,19 @@ private:
 	// this session's pedal travel (under Lock): starts from the saved calibration when it is valid
 	int32 CalThrottleMin = MAX_int32, CalThrottleMax = MIN_int32, CalBrakeMin = MAX_int32, CalBrakeMax = MIN_int32;
 	bool bPedalCalibrationRequested = false;
+
+	// test override (under Lock): cr.Wheel.Test
+	double TestUntil = 0.0;
+	float TestThrottle = 0.0f;
+	int32 TestButtons = 0;
+
+	// menu actions (game thread)
+	double LastMenuQuery = -1.0;
+	int32 PendingPaddle = 0;          // 1 right, 2 left: a single press waiting for the chord window
+	double PendingPaddleAt = 0.0;
+	bool bChord = false;              // both paddles are down
+	double ChordSince = 0.0;
+	bool bChordHoldFired = false;
 
 	float PendingTorque = 0.0f;
 	double LastTorqueTime = 0.0;

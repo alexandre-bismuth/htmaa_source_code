@@ -1,5 +1,12 @@
 {
  "region": "mit_core",
+ "free_roam": {
+  "x": 143318.0,
+  "y": 75340.9,
+  "z": 60.0,
+  "yaw": 155.64,
+  "width": 0
+ },
  "tracks": [
   {
    "id": "central_loop",

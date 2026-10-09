@@ -1,6 +1,7 @@
 #include "TimeTrialSubsystem.h"
 
 #include "CambridgeGameUserSettings.h"
+#include "CambridgeLaunchSubsystem.h"
 #include "CambridgeMenuSubsystem.h"
 #include "CambridgeUIStyle.h"
 #include "CambridgeWheelSubsystem.h"
@@ -125,6 +126,10 @@ void UTimeTrialSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		return;
 	}
 	LoadConfig();          // the best runs as saved now (the CDO only has what was on disk at startup)
+	if (const UCambridgeGameUserSettings* Settings = UCambridgeGameUserSettings::Get())
+	{
+		Settings->ApplySound();      // (the master volume: the audio device exists now)
+	}
 	BestTimeCache.Reset();
 	LoadTracks();
 	LoadSounds();
@@ -159,7 +164,8 @@ void UTimeTrialSubsystem::PlayUISound(FName Name, float Volume) const
 {
 	if (const TObjectPtr<USoundBase>* S = Sounds.Find(Name); S && *S)
 	{
-		UGameplayStatics::PlaySound2D(GetWorld(), *S, Volume);
+		const UCambridgeGameUserSettings* Settings = UCambridgeGameUserSettings::Get();
+		UGameplayStatics::PlaySound2D(GetWorld(), *S, Volume * (Settings ? FMath::Clamp(Settings->RaceSoundsVolume, 0.0f, 1.0f) : 1.0f));
 	}
 	UE_LOG(LogTimeTrial, Verbose, TEXT("sound %s"), *Name.ToString());
 }
@@ -485,6 +491,12 @@ bool UTimeTrialSubsystem::GroundZ(const FVector& At, float& OutZ) const
 	return false;
 }
 
+bool UTimeTrialSubsystem::IsWheelActive() const
+{
+	const UCambridgeWheelSubsystem* Wheel = UCambridgeWheelSubsystem::Get(this);
+	return Wheel && Wheel->IsActive();
+}
+
 AImprezaSTi* UTimeTrialSubsystem::GetCar() const
 {
 	return Cast<AImprezaSTi>(UGameplayStatics::GetPlayerPawn(GetWorld(), 0));
@@ -551,7 +563,7 @@ bool UTimeTrialSubsystem::IsUIBlocking() const
 	const UGameInstance* GI = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	const UCambridgeMenuSubsystem* Menu = GI ? GI->GetSubsystem<UCambridgeMenuSubsystem>() : nullptr;
 	const UMinimapSubsystem* Map = GetWorld() ? GetWorld()->GetSubsystem<UMinimapSubsystem>() : nullptr;
-	return (Menu && Menu->IsMenuOpen()) || (Map && Map->IsFullMapOpen());
+	return (Menu && Menu->IsMenuOpen()) || (Map && Map->IsFullMapOpen()) || UCambridgeLaunchSubsystem::IsLaunchMenuOpen(this);
 }
 
 bool UTimeTrialSubsystem::OnKeyDown(const FKey& K)
@@ -952,6 +964,17 @@ void UTimeTrialSubsystem::PassGate()
 	ShowGates();
 }
 
+void UTimeTrialSubsystem::FinishForTest()
+{
+	if (State == ETimeTrialState::Running && Tracks.IsValidIndex(Active))
+	{
+		UE_LOG(LogTimeTrial, Display, TEXT("test: finishing %s now (not saved)"), *Tracks[Active].Name);
+		bFinishForTest = true;
+		Finish();
+		bFinishForTest = false;
+	}
+}
+
 void UTimeTrialSubsystem::Finish()
 {
 	const FTimeTrialTrack& T = Tracks[Active];
@@ -966,7 +989,7 @@ void UTimeTrialSubsystem::Finish()
 	ResultsFocus = 0;
 	bWrongWay = bMissed = false;
 	RestartHeldSince = LeaveHeldSince = -1.0;
-	if (bNewBest)
+	if (bNewBest && !bFinishForTest)
 	{
 		TArray<FString> Parts;
 		for (double S : Splits) { Parts.Add(FString::Printf(TEXT("%.3f"), S)); }
@@ -1200,10 +1223,11 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 	const FVector Loc = Car->GetActorLocation();
 	const float SpeedKmh = Car->GetChaosVehicleMovement()->GetForwardSpeed() * 0.036f;
 
-	// the wheel's start button, or both paddles together: Enter in free roam and on the results; during an
-	// event they work like R - hold 1 s to restart, a tap of the start button = back on track (a tap of both
-	// paddles, easy to do by accident mid-shift, does nothing)
-	if (UCambridgeWheelSubsystem* Wheel = UCambridgeWheelSubsystem::Get(this); Wheel && Wheel->IsActive())
+	// the home-built wheel has no start button: both paddles together are its start - Enter in the start box and on
+	// the results; during an event they work like R - a tap = back on track, hold 1 s to restart. A start button, if
+	// one is ever added, does the same.
+	// (a menu over the game has the wheel's buttons: the launch menu runs unpaused, so this tick still runs under it)
+	if (UCambridgeWheelSubsystem* Wheel = UCambridgeWheelSubsystem::Get(this); Wheel && Wheel->IsActive() && !IsUIBlocking())
 	{
 		const FWheelInputState S = Wheel->GetState();
 		const bool bStartEdge = Wheel->ConsumeStart();            // rising edge: catches a press shorter than a frame
@@ -1232,8 +1256,8 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 				{
 					const bool bTap = WheelNow - RestartHeldSince < TapSeconds;
 					UE_LOG(LogTimeTrial, Display, TEXT("wheel: released after %.2f s -> %s"), WheelNow - RestartHeldSince,
-						bTap ? (bWheelHoldIsStart ? TEXT("back on track") : TEXT("nothing (paddle tap)")) : TEXT("nothing (released before the hold)"));
-					if (bWheelHoldIsStart && bTap)
+						bTap ? TEXT("back on track") : TEXT("nothing (released before the hold)"));
+					if (bTap)
 					{
 						ResetToLastGate();
 					}
@@ -1241,12 +1265,29 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 				}
 			}
 		}
+		else if (State == ETimeTrialState::Finished)
+		{
+			// results: one paddle moves the focus (AImprezaSTi leaves the paddles alone while the results are up), both
+			// tapped (the wheel's start) press it; armed ResultsArmSeconds after the line, like the keys
+			bWheelHold = false;
+			const EWheelMenuAction Action = Wheel->ConsumeMenuAction();
+			if (Now() - FinishedAt >= ResultsArmSeconds && (Action == EWheelMenuAction::Up || Action == EWheelMenuAction::Down))
+			{
+				ResultsFocus = (ResultsFocus + (Action == EWheelMenuAction::Down ? 1 : 2)) % 3;
+				PlayUISound(TEXT("ui_select"), 0.8f);
+			}
+			if (bStartEdge || Action == EWheelMenuAction::Go)
+			{
+				UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (results)"));
+				OnConfirm();
+			}
+		}
 		else
 		{
 			bWheelHold = false;
 			if (bPressed)
 			{
-				UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (%s)"), State == ETimeTrialState::FreeRoam ? TEXT("free roam") : TEXT("results"));
+				UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (free roam)"));
 				OnConfirm();
 			}
 		}
@@ -1919,12 +1960,21 @@ void UTimeTrialSubsystem::AttachHUD()
 			]
 			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0, 12, 0, 0)
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ CUI::MakeKeyCap(LOCTEXT("KeyEnter", "ENTER"), false) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0)[ Label("Label", LOCTEXT("Or", "/")) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ CUI::MakeKeyCap(FText::FromString(TEXT("pad_a")), false) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0)[ Label("Label", LOCTEXT("Or2", "/")) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Label("Label", LOCTEXT("BothPaddles", "both paddles")) ]
+				// keyboard / gamepad, or the home-built wheel's start button / both paddles
+				SNew(SOverlay)
+				+ SOverlay::Slot()
+				[
+					SNew(SHorizontalBox).Visibility(ShowIf([this]() { return !IsWheelActive(); }))
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ CUI::MakeKeyCap(LOCTEXT("KeyEnter", "ENTER"), false) ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0)[ Label("Label", LOCTEXT("Or", "/")) ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ CUI::MakeKeyCap(FText::FromString(TEXT("pad_a")), false) ]
+				]
+				+ SOverlay::Slot()
+				[
+					SNew(SHorizontalBox).Visibility(ShowIf([this]() { return IsWheelActive(); }))
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ CUI::MakeKeyCap(LOCTEXT("KeyBothPaddles", "BOTH PADDLES"), false) ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0, 0, 0)[ Label("Label", LOCTEXT("WheelTogether", "together")) ]
+				]
 			]
 			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right).Padding(0, 10, 0, 0)
 			[
@@ -1984,7 +2034,12 @@ void UTimeTrialSubsystem::AttachHUD()
 				.Visibility(ShowIf([this]() { return State == ETimeTrialState::FreeRoam && NearMarker < 0 && HintMarker < 0 && Now() < 15.0; }))
 				[
 					CUI::MakeToast(LOCTEXT("Welcome", "Welcome to Cambridge"),
-						LOCTEXT("WelcomeBody", "Drive into a blue start box to race an event.\nEsc: settings, driving assists and wheel calibration."),
+						TAttribute<FText>::CreateLambda([this]()
+						{
+							return IsWheelActive()
+								? LOCTEXT("WelcomeBodyWheel", "Drive into a blue start box and press both paddles together to race an event.\nEsc: settings, driving assists and wheel calibration.")
+								: LOCTEXT("WelcomeBody", "Drive into a blue start box to race an event.\nEsc: settings, driving assists and wheel calibration.");
+						}),
 						TEXT("icon_info"))
 				]
 			]
@@ -1999,14 +2054,27 @@ void UTimeTrialSubsystem::AttachHUD()
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 1, 8, 0)[ Label("HudLabel", LOCTEXT("HoldWord", "HOLD")) ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ CUI::MakeKeyHint(KeyCaps, What, true) ];
 	};
+	// (the home-built wheel: both paddles - tap: back on track, hold: restart; leaving stays on the keyboard)
+	auto One = [](const TCHAR* Key) { return TArray<FText>{ FText::FromString(Key) }; };
 	TSharedRef<SWidget> HintBar = SNew(SBorder)
 		.BorderImage(CUI::Brush("glass_pill"))
 		.Padding(FMargin(18, 9))
 		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 28, 0)[ CUI::MakeKeyHint(Keys(TEXT("R"), TEXT("Y")), LOCTEXT("HintReset", "Back on track"), true) ]
-			+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 28, 0)[ Hold(Keys(TEXT("R"), TEXT("Y")), LOCTEXT("HintRestart", "Restart")) ]
-			+ SHorizontalBox::Slot().AutoWidth()[ Hold(Keys(TEXT("BKSP"), TEXT("^")), LOCTEXT("HintLeave", "Leave")) ]
+			SNew(SOverlay)
+			+ SOverlay::Slot()
+			[
+				SNew(SHorizontalBox).Visibility(ShowIf([this]() { return !IsWheelActive(); }))
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 28, 0)[ CUI::MakeKeyHint(Keys(TEXT("R"), TEXT("Y")), LOCTEXT("HintReset", "Back on track"), true) ]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 28, 0)[ Hold(Keys(TEXT("R"), TEXT("Y")), LOCTEXT("HintRestart", "Restart")) ]
+				+ SHorizontalBox::Slot().AutoWidth()[ Hold(Keys(TEXT("BKSP"), TEXT("^")), LOCTEXT("HintLeave", "Leave")) ]
+			]
+			+ SOverlay::Slot()
+			[
+				SNew(SHorizontalBox).Visibility(ShowIf([this]() { return IsWheelActive(); }))
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 28, 0)[ CUI::MakeKeyHint(One(TEXT("BOTH PADDLES")), LOCTEXT("WheelReset", "Back on track"), true) ]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 28, 0)[ Hold(One(TEXT("BOTH PADDLES")), LOCTEXT("WheelRestart", "Restart")) ]
+				+ SHorizontalBox::Slot().AutoWidth()[ Hold(One(TEXT("BKSP")), LOCTEXT("WheelLeave", "Leave")) ]
+			]
 		];
 
 	// ---- driving HUD (bottom right): dot-matrix speed, gear badge, rpm and boost blocks, assists
@@ -2360,9 +2428,23 @@ void UTimeTrialSubsystem::ShowResults()
 		]
 	];
 	auto Key = [](const TCHAR* K) { return CUI::MakeKeyCap(FText::FromString(K), false); };
+	auto ShowWheel = [this](bool bWheel)
+	{
+		return TAttribute<EVisibility>::CreateLambda([this, bWheel]() { return IsWheelActive() == bWheel ? EVisibility::HitTestInvisible : EVisibility::Collapsed; });
+	};
+	// the home-built wheel: one paddle selects, both together confirm
 	Content->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(0, 14, 0, 0)
 	[
-		SNew(SHorizontalBox)
+		SNew(SHorizontalBox).Visibility(ShowWheel(true))
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Key(TEXT("LEFT")) ]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 0, 0)[ Key(TEXT("RIGHT")) ]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 1, 22, 0)[ Label("Label", LOCTEXT("WheelResultSelect", "Paddle: select")) ]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Key(TEXT("BOTH PADDLES")) ]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 1, 0, 0)[ Label("Label", LOCTEXT("WheelResultConfirm", "Confirm")) ]
+	];
+	Content->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(0, 14, 0, 0)
+	[
+		SNew(SHorizontalBox).Visibility(ShowWheel(false))
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Key(TEXT("<")) ]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 0, 0)[ Key(TEXT(">")) ]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 1, 22, 0)[ Label("Label", LOCTEXT("KeySelect", "Select")) ]
@@ -2418,6 +2500,16 @@ namespace
 			if (UTimeTrialSubsystem* TT = World ? World->GetSubsystem<UTimeTrialSubsystem>() : nullptr)
 			{
 				TT->PreviewHUD(Args.Num() ? Args[0].ToLower() : FString(TEXT("flash")));
+			}
+		}));
+
+	// test: finish the running event now (the results screen; nothing saved)
+	FAutoConsoleCommandWithWorldAndArgs FinishCmd(TEXT("cr.TT.Finish"), TEXT("Test: finish the running event now (results screen, not saved)"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>&, UWorld* World)
+		{
+			if (UTimeTrialSubsystem* TT = World ? World->GetSubsystem<UTimeTrialSubsystem>() : nullptr)
+			{
+				TT->FinishForTest();
 			}
 		}));
 
