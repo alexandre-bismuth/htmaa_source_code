@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "author": "abismuth",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-xiao-esp32-c3", "id": "xiao", "top": 0, "left": 600, "attrs": {} },
+    {
+      "type": "wokwi-text",
+      "id": "t_J2",
+      "top": 115.2,
+      "left": -124.8,
+      "attrs": { "text": "Throttle pedal" }
+    },
+    {
+      "type": "wokwi-slide-potentiometer",
+      "id": "pot_J2",
+      "top": 70,
+      "left": 23,
+      "attrs": { "travelLength": "30" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "d2",
+      "top": 71,
+      "left": 270,
+      "attrs": { "color": "limegreen", "label": "D2" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r2",
+      "top": 107.3,
+      "left": 320,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "t_J3",
+      "top": 259.2,
+      "left": -105.6,
+      "attrs": { "text": "Brake pedal" }
+    },
+    {
+      "type": "wokwi-slide-potentiometer",
+      "id": "pot_J3",
+      "top": 220,
+      "left": 23,
+      "attrs": { "travelLength": "30" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "d3",
+      "top": 221,
+      "left": 270,
+      "attrs": { "color": "limegreen", "label": "D3" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r3",
+      "top": 257.3,
+      "left": 320,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "t_J4",
+      "top": 412.8,
+      "left": -96,
+      "attrs": { "text": "Handbrake" }
+    },
+    {
+      "type": "wokwi-slide-potentiometer",
+      "id": "pot_J4",
+      "top": 370,
+      "left": 23,
+      "attrs": { "travelLength": "30" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "d4",
+      "top": 371,
+      "left": 270,
+      "attrs": { "color": "limegreen", "label": "D4" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r4",
+      "top": 407.3,
+      "left": 320,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "t_J5",
+      "top": 547.2,
+      "left": -115.2,
+      "attrs": { "text": "Upshift paddle" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_J5",
+      "top": 531,
+      "left": 163,
+      "attrs": { "color": "green", "label": "UP", "key": "u", "bounce": "0" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "d5",
+      "top": 521,
+      "left": 270,
+      "attrs": { "color": "limegreen", "label": "D5" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r5",
+      "top": 557.3,
+      "left": 320,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r9",
+      "top": 573.3,
+      "left": 378.8,
+      "attrs": { "value": "4990" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "t_J6",
+      "top": 691.2,
+      "left": -134.4,
+      "attrs": { "text": "Downshift paddle" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_J6",
+      "top": 681,
+      "left": 163,
+      "attrs": { "color": "red", "label": "DOWN", "key": "d", "bounce": "0" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "d6",
+      "top": 671,
+      "left": 270,
+      "attrs": { "color": "limegreen", "label": "D6" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r6",
+      "top": 707.3,
+      "left": 320,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r10",
+      "top": 723.3,
+      "left": 378.8,
+      "attrs": { "value": "4990" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "t_J1",
+      "top": 844.8,
+      "left": -115.2,
+      "attrs": { "text": "Steering wheel" }
+    },
+    { "type": "wokwi-ky-040", "id": "enc", "top": 817.5, "left": 114, "attrs": {} },
+    {
+      "type": "wokwi-led",
+      "id": "d1",
+      "top": 873,
+      "left": 270,
+      "attrs": { "color": "limegreen", "label": "D1" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 909.3,
+      "left": 320,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r7",
+      "top": 802.3,
+      "left": 378.8,
+      "attrs": { "value": "4990" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r8",
+      "top": 830.3,
+      "left": 378.8,
+      "attrs": { "value": "4990" }
+    }
+  ],
+  "connections": [
+    [ "d2:A", "r2:1", "green", [] ],
+    [ "d2:C", "pot_J2:GND", "black", [] ],
+    [ "xiao:GND", "pot_J2:GND", "black", [ "h17.6", "v-53.2", "h-435", "v138" ] ],
+    [ "pot_J2:SIG", "xiao:D0", "green", [ "h-12", "v22", "h496", "v-136.4", "h97.4" ] ],
+    [ "pot_J2:VCC", "r2:2", "red", [ "h-6", "v-57", "h360.8", "v57" ] ],
+    [ "d3:A", "r3:1", "green", [] ],
+    [ "d3:C", "pot_J3:GND", "black", [] ],
+    [ "pot_J2:GND", "pot_J3:GND", "black", [ "h15", "v150" ] ],
+    [ "pot_J3:SIG", "xiao:D1", "blue", [ "h-12", "v22", "h508", "v-276.8", "h85.4" ] ],
+    [ "pot_J3:VCC", "r3:2", "red", [ "h-6", "v-57", "h360.8", "v57" ] ],
+    [ "d4:A", "r4:1", "green", [] ],
+    [ "d4:C", "pot_J4:GND", "black", [] ],
+    [ "pot_J3:GND", "pot_J4:GND", "black", [ "h15", "v150" ] ],
+    [ "pot_J4:SIG", "xiao:D2", "purple", [ "h-12", "v22", "h520", "v-417.2", "h73.4" ] ],
+    [ "pot_J4:VCC", "r4:2", "red", [ "h-6", "v-57", "h360.8", "v57" ] ],
+    [ "d5:A", "r5:1", "green", [] ],
+    [ "d5:C", "btn_J5:2.r", "black", [] ],
+    [ "pot_J4:GND", "btn_J5:2.l", "black", [ "h15", "v110", "h-97", "v40" ] ],
+    [ "btn_J5:1.l", "r9:2", "cyan", [ "h-25", "v49", "h299.6", "v-14" ] ],
+    [ "r9:2", "xiao:D3", "cyan", [ "h106.4", "v-531.6", "h61.4" ] ],
+    [ "d6:A", "r6:1", "green", [] ],
+    [ "d6:C", "btn_J6:2.r", "black", [] ],
+    [ "btn_J5:2.l", "btn_J6:2.l", "black", [ "h-15", "v150" ] ],
+    [ "btn_J6:1.l", "r10:2", "magenta", [ "h-25", "v49", "h299.6", "v-14" ] ],
+    [ "r10:2", "xiao:D4", "magenta", [ "h118.4", "v-672", "h49.4" ] ],
+    [ "d1:A", "r1:1", "green", [] ],
+    [ "enc:GND", "d1:C", "black", [ "h25", "v52" ] ],
+    [ "btn_J6:2.l", "d1:C", "black", [ "h-63", "v220", "h185" ] ],
+    [ "enc:CLK", "r7:2", "gold", [ "h20", "v-5.4", "h187.6", "v-12" ] ],
+    [ "r7:2", "xiao:D6", "gold", [ "h142.4", "v-731.8", "h25.4" ] ],
+    [ "enc:DT", "r8:2", "brown", [ "h32", "v13.1", "h175.6", "v-12" ] ],
+    [ "r8:2", "xiao:D5", "brown", [ "h130.4", "v-769.4", "h37.4" ] ],
+    [ "enc:VCC", "xiao:5V", "orange", [ "h15", "v84.2", "h465", "v-919.4", "h-47.6" ] ],
+    [ "xiao:3V3", "r2:2", "red", [ "h32.6", "v-77.8", "h-316.2", "v153" ] ],
+    [ "r2:2", "r3:2", "red", [ "v150" ] ],
+    [ "r3:2", "r4:2", "red", [ "v150" ] ],
+    [ "r4:2", "r5:2", "red", [ "v150" ] ],
+    [ "r5:2", "r9:1", "red", [ "v16" ] ],
+    [ "r9:1", "r6:2", "red", [ "v134" ] ],
+    [ "r6:2", "r10:1", "red", [ "v16" ] ],
+    [ "r10:1", "r7:1", "red", [ "v79" ] ],
+    [ "r7:1", "r8:1", "red", [ "v28" ] ],
+    [ "r8:1", "r1:2", "red", [ "v79" ] ]
+  ],
+  "dependencies": {}
+}
