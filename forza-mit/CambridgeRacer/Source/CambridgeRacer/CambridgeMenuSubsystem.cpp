@@ -60,7 +60,7 @@ namespace
 		{ TEXT("Steer"),                  TEXT("A / D, Left / Right"), TEXT("Left stick"),       TEXT("Rim") },
 		{ TEXT("Throttle"),               TEXT("W / Up"),              TEXT("RT"),               TEXT("Right pedal") },
 		{ TEXT("Brake / reverse"),        TEXT("S / Down"),            TEXT("LT"),               TEXT("Left pedal") },
-		{ TEXT("Handbrake"),              TEXT("Space"),               TEXT("A"),                TEXT("-") },
+		{ TEXT("Handbrake"),              TEXT("Space"),               TEXT("A"),                TEXT("Handbrake lever") },
 		{ TEXT("Shift up / down (manual)"), TEXT("E / Q"),               TEXT("B / X"),            TEXT("Right / left paddle") },
 		{ TEXT("Reverse (manual)"),       TEXT("Q past N"),            TEXT("X past N"),         TEXT("Left paddle past N") },
 		{ TEXT("Auto / manual gears"),    TEXT("Menu: assists"),       TEXT("Menu: assists"),    TEXT("Menu: assists") },

@@ -4,11 +4,11 @@
     python3 tools/wheel/wheel_sim.py [--script drive|idle|torture|menu] [--seconds 60] [--link PATH] [--unplug-at S]
 
 Prints the pty path; start the game with -WheelPort=<that path> (add -WheelLog for a 1 Hz status
-line in the log). The simulator streams "W <steer_centideg> <throttle> <brake> <buttons>" at 500 Hz
+line in the log). The simulator streams "W <steer_centideg> <throttle> <brake> <buttons> <handbrake>" at 500 Hz
 from a scripted drive and prints the force feedback ("F <permille>") the game sends back, so the whole
 input path (serial thread, calibration, paddles, FFB) is testable without the hardware.
 
-Script "drive": pedal calibration sweep, launch in 1st, paddle upshifts at 2.5 / 5 / 7.5 s,
+Script "drive": pedal (and handbrake) calibration sweep, launch in 1st, paddle upshifts at 2.5 / 5 / 7.5 s,
 a slalom (+-90 deg of rim), brake to a stop with a downshift.
 Script "menu": the launch menu and the settings by the paddles only (the wheel has no start button: both paddles
 tapped together are its start, held 1 s are back / close; start the game with -LaunchMenu in a test run): from 8 s
@@ -76,7 +76,7 @@ def menu(t):
 GARBAGE = [
     b"\x00\xff\xfe garbage \x80\x81\n",
     b"W 1 2 3\n",                          # too few fields
-    b"W 1 2 3 4 5\n",                      # too many
+    b"W 1 2 3 4 5 6\n",                    # too many
     b"W 99999999999 0 0 0\n",              # steer out of range
     b"W 0 70000 70000 0\n",                # pedals out of range (would wreck the calibration)
     b"W 0 -5 0 0\n",                       # negative pedal
@@ -155,7 +155,8 @@ def main():
             continue
         steer, thr, brk, buttons = (drive(t) if args.script in ("drive", "torture")
                                     else menu(t) if args.script == "menu" else (0.0, 0.0, 0.0, 0))
-        msg = f"W {int(round(steer * 100))} {int(thr * 4095)} {int(brk * 4095)} {buttons}\n".encode()
+        hb = math.sin(math.pi * t) if t < 1.0 and args.script != "idle" else 0.0   # (swept with the pedals)
+        msg = f"W {int(round(steer * 100))} {int(thr * 4095)} {int(brk * 4095)} {buttons} {int(hb * 4095)}\n".encode()
         try:
             if args.script == "torture" and rng.random() < 0.05:
                 os.write(master, rng.choice(GARBAGE))

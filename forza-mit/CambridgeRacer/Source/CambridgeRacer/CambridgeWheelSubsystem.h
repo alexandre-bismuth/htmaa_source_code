@@ -1,8 +1,9 @@
 // The home-built steering wheel / pedals / paddle shifters, over USB CDC serial.
 // Protocol (ASCII lines, see docs/wheel_protocol.md):
-//   device -> game   "W <steer_centideg> <throttle_raw> <brake_raw> <buttons>"   ~500 Hz
+//   device -> game   "W <steer_centideg> <throttle_raw> <brake_raw> <buttons> [<handbrake_raw>]"   ~500 Hz
 //                    buttons: bit0 upshift paddle, bit1 downshift paddle, bit2 start/menu (optional: this wheel has
-//                    none; both paddles pressed together are its start everywhere)
+//                    none; both paddles pressed together are its start everywhere). handbrake_raw: optional, a lever
+//                    read like the pedals
 //   game -> device   "F <torque_permille>"   -1000..1000, + turns the rim clockwise. Once per frame
 //                    (50-120 Hz, capped at 250 Hz): the firmware should smooth it and do fast damping itself.
 //                    The firmware must drop the motor torque to 0 if no F line came for 100 ms.
@@ -10,8 +11,8 @@
 // serial board), or the Port in Input.ini (ignored if it doesn't exist), or -WheelPort=<path> (e.g. the
 // wheel_sim.py pseudo-terminal; test runs with it save nothing). Reconnects on unplug. Reading runs on its
 // own thread; the game thread reads the latest sample.
-// Pedals calibrate themselves each session (min / max seen); the saved calibration is only written by the
-// menu's calibration rows (Recalibrate pedals, Centre wheel), when the menu closes.
+// Pedals (and the handbrake) calibrate themselves each session (min / max seen); the saved calibration is only
+// written by the menu's calibration rows (Recalibrate pedals, Centre wheel), when the menu closes.
 
 #pragma once
 
@@ -36,6 +37,7 @@ struct FWheelInputState
 	bool bUpshift = false;
 	bool bDownshift = false;
 	bool bStart = false;
+	float Handbrake = 0.0f;     // 0..1 (0 if the device sends none)
 };
 
 UCLASS(config = Input)
@@ -65,14 +67,14 @@ public:
 	 *  starts clean (presses made before are dropped). */
 	EWheelMenuAction ConsumeMenuAction();
 	/** Test (cr.Wheel.Test, with a wheel connected: wheel_sim.py --script idle): for Seconds the buttons read Buttons
-	 *  (1 right paddle, 2 left, 4 start) and the pedals read Throttle and Brake (0..1), whatever the device sends. */
-	void SetTestInput(float Seconds, float Throttle, int32 Buttons, float Brake = 0.0f);
+	 *  (1 right paddle, 2 left, 4 start) and the pedals read Throttle, Brake and Handbrake (0..1), whatever the device sends. */
+	void SetTestInput(float Seconds, float Throttle, int32 Buttons, float Brake = 0.0f, float Handbrake = 0.0f);
 
 	/** Force feedback for the next frame, -1..1 (+ = clockwise); scaled by the strength setting. */
 	void SetForceFeedback(float Torque);
 	/** Declares the current rim angle as straight ahead (menu: "Centre wheel"). */
 	void CentreWheel();
-	/** Menu: forgets the pedal travel; press both pedals fully, then close the menu to save it. */
+	/** Menu: forgets the pedal travel; press both pedals (and the handbrake) fully, then close the menu to save it. */
 	void ResetPedalCalibration();
 	/** Saves the wheel settings (menu close). Does nothing in test runs (-WheelPort, -ShotTour, -DriveTest). */
 	void SaveSettings();
@@ -87,6 +89,8 @@ public:
 	UPROPERTY(config) int32 ThrottleMax = 0;
 	UPROPERTY(config) int32 BrakeMin = 4095;
 	UPROPERTY(config) int32 BrakeMax = 0;
+	UPROPERTY(config) int32 HandbrakeMin = 4095;
+	UPROPERTY(config) int32 HandbrakeMax = 0;
 
 	// FTickableGameObject
 	virtual void Tick(float DeltaTime) override;
@@ -121,7 +125,7 @@ private:
 	double OpenTime = 0.0;
 
 	// raw latest sample (under Lock)
-	int32 RawSteer = 0, RawThrottle = 0, RawBrake = 0, Buttons = 0;
+	int32 RawSteer = 0, RawThrottle = 0, RawBrake = 0, RawHandbrake = 0, Buttons = 0;
 	double LastSampleTime = 0.0;
 	int32 SampleCount = 0;
 	int32 BadLines = 0;
@@ -130,12 +134,14 @@ private:
 	double EdgeUpTime = 0.0, EdgeDownTime = 0.0, EdgeStartTime = 0.0;
 	// this session's pedal travel (under Lock): starts from the saved calibration when it is valid
 	int32 CalThrottleMin = MAX_int32, CalThrottleMax = MIN_int32, CalBrakeMin = MAX_int32, CalBrakeMax = MIN_int32;
+	int32 CalHandbrakeMin = MAX_int32, CalHandbrakeMax = MIN_int32;
 	bool bPedalCalibrationRequested = false;
 
 	// test override (under Lock): cr.Wheel.Test
 	double TestUntil = 0.0;
 	float TestThrottle = 0.0f;
 	float TestBrake = 0.0f;
+	float TestHandbrake = 0.0f;
 	int32 TestButtons = 0;
 
 	// menu actions (game thread)

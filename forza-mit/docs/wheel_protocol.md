@@ -17,8 +17,9 @@ For a reference firmware, see `firmware/cambridge_wheel/cambridge_wheel.ino`.
 ## Device → game: input samples (~500 Hz, at least 100 Hz)
 
 ```
-W <steer_centideg> <throttle_raw> <brake_raw> <buttons>
+W <steer_centideg> <throttle_raw> <brake_raw> <buttons> [<handbrake_raw>]
 W -1234 2048 0 1
+W -1234 2048 0 1 3100
 ```
 
 | field | meaning |
@@ -26,6 +27,7 @@ W -1234 2048 0 1
 | `steer_centideg` | rim angle in 1/100 degree, signed, **+ = clockwise (right)**. Any zero works: the player sets the centre in the menu (Esc, then *Centre wheel*). |
 | `throttle_raw`, `brake_raw` | raw pedal readings, integers (e.g. 12-bit ADC: 0..4095), **increasing as the pedal is pressed** (invert in firmware if needed). The game learns each pedal's min/max travel by itself: press both pedals fully once after first plugging in. It keeps a 3 % dead zone at both ends. |
 | `buttons` | bit 0 = **upshift** paddle, bit 1 = **downshift** paddle, bit 2 = start/confirm (optional: this wheel has none; both paddles pressed together do the same everywhere). Send the current state; the game detects presses. Debounce in firmware (~5 ms). |
+| `handbrake_raw` | optional: the handbrake lever's raw reading (e.g. a potentiometer on the ADC), **increasing as it is pulled**, calibrated like the pedals (pull it fully once). Without a handbrake, send 4 fields. |
 
 Reply to `?` (sent by the game when it opens the port) with an info line:
 
@@ -59,6 +61,8 @@ What the torque contains:
 - The wheel overrides keyboard and gamepad steering, throttle and brake. Everything else still works (Esc menu, camera, assists keys).
 - Steering is linear over half the *Wheel rotation* setting (default 540° lock-to-lock, so ±270° = full lock of the road wheels). It's 1:1 at all speeds (the keyboard's speed-sensitive steering is undone).
 - Two independent pedals: left-foot braking works.
+- Handbrake lever: it brakes the rear wheels harder and harder over its whole travel (fully pulled = Space on the
+  keyboard). Space / gamepad A still work beside it.
 - The gearbox setting (automatic / manual) changes only in Settings > Driving Assists, never from the wheel.
 - Automatic (as in Forza): the paddles don't shift. Holding the brake at a standstill engages reverse; the brake pedal then drives and the throttle brakes, and the throttle at a standstill goes back to first.
 - Manual: the paddles shift, the **brake never engages reverse**; reverse = downshift past neutral (1 → N → R), refused above 8 km/h.
@@ -78,11 +82,11 @@ What the torque contains:
   `W` sample within 3 s is skipped (so another USB-serial board isn't mistaken for the wheel). `-WheelPort=<path>`
   overrides detection for one run and is never saved; a saved port that no longer exists (or is a pty) is ignored.
 - If no sample arrives for 0.5 s, the wheel is considered unplugged; the game waits 1 s, then reconnects automatically.
-- **Parsing is strict:** a `W` line must have exactly 4 in-range integer fields; anything else (partial or garbage
+- **Parsing is strict:** a `W` line must have 4 (or 5, with the handbrake) in-range integer fields; anything else (partial or garbage
   lines) is dropped and counted in the `-WheelLog` status.
 - **Pedal calibration** is tracked per session (the game learns each pedal's travel as you press it), starting from the
   saved values only if they are valid (min < max). The saved calibration is written only by the menu's
-  *Recalibrate pedals* flow (press both pedals fully, then close the menu). Test runs (`-WheelPort`, shot tours,
+  *Recalibrate pedals* flow (press both pedals fully and pull the handbrake, then close the menu). Test runs (`-WheelPort`, shot tours,
   drive tests) never save anything.
 
 ## Testing without hardware

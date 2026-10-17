@@ -239,6 +239,12 @@ void AImprezaSTi::Tick(float Delta)
 	{
 		ApplyWheelInput(*Wheel);
 	}
+	else if (bWheelHandbrake)
+	{
+		bWheelHandbrake = false;     // unplugged (or the launch menu opened) with the handbrake pulled
+		SetHandbrakeScale(1.0f);
+		DoHandbrakeStop();
+	}
 	Super::Tick(Delta);
 	UpdateEngine(Delta);
 	UpdateWheelVisuals();
@@ -249,9 +255,9 @@ void AImprezaSTi::Tick(float Delta)
 		if (bLog && GetWorld()->GetTimeSeconds() - LastWheelLog > 1.0)
 		{
 			LastWheelLog = GetWorld()->GetTimeSeconds();
-			UE_LOG(LogTemp, Display, TEXT("STI_WHEEL speed=%.0f km/h gear=%d auto=%d rpm=%.0f"),
+			UE_LOG(LogTemp, Display, TEXT("STI_WHEEL speed=%.0f km/h gear=%d auto=%d rpm=%.0f hb=%d"),
 				GetChaosVehicleMovement()->GetForwardSpeed() * 0.036f, GetChaosVehicleMovement()->GetCurrentGear(), bAutoShift ? 1 : 0,
-				GetChaosVehicleMovement()->GetEngineRotationSpeed());
+				GetChaosVehicleMovement()->GetEngineRotationSpeed(), GetChaosVehicleMovement()->GetHandbrakeInput() ? 1 : 0);
 		}
 	}
 
@@ -487,6 +493,18 @@ void AImprezaSTi::SetEngineSoundMuted(bool bMuted)
 	}
 }
 
+void AImprezaSTi::SetHandbrakeScale(float Scale)
+{
+	UChaosWheeledVehicleMovementComponent* Move = GetChaosVehicleMovement();
+	for (int32 i = 0; i < Move->Wheels.Num(); ++i)
+	{
+		if (Move->Wheels[i] && Move->Wheels[i]->bAffectedByHandbrake)
+		{
+			Move->SetWheelHandbrakeTorque(i, Move->Wheels[i]->MaxHandBrakeTorque * Scale);
+		}
+	}
+}
+
 void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 {
 	UChaosWheeledVehicleMovementComponent* Move = GetChaosVehicleMovement();
@@ -520,6 +538,23 @@ void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 	}
 	DriverThrottle = Throttle;
 	Move->SetBrakeInput(Brake);
+	// the handbrake lever: the braking stops growing past ~40 % of MaxHandBrakeTorque (tested from 70 km/h), so the
+	// first 90 % of the travel spreads 0..40 % (it brakes more and more), the last 10 % goes to full torque (= Space).
+	// While pulled it is applied every frame (leaving the results releases it); its release acts once, so Space / the
+	// gamepad handbrake still work beside it
+	const bool bHandbrake = S.Handbrake > 0.02f;
+	if (bHandbrake)
+	{
+		const float Lever = S.Handbrake;
+		SetHandbrakeScale(Lever < 0.9f ? Lever / 0.9f * 0.4f : 0.4f + (Lever - 0.9f) / 0.1f * 0.6f);
+		DoHandbrakeStart();
+	}
+	else if (bWheelHandbrake)
+	{
+		SetHandbrakeScale(1.0f);
+		DoHandbrakeStop();
+	}
+	bWheelHandbrake = bHandbrake;
 	// (the results window: the paddles pick its buttons, UTimeTrialSubsystem takes them)
 	const UTimeTrialSubsystem* TT = GetWorld() ? GetWorld()->GetSubsystem<UTimeTrialSubsystem>() : nullptr;
 	if (!TT || TT->GetState() != ETimeTrialState::Finished)

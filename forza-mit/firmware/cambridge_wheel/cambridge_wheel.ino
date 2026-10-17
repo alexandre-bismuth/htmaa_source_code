@@ -4,15 +4,16 @@
 //   steering : quadrature encoder on the rim shaft (or motor shaft, see STEER_GEAR)
 //   pedals   : two analog sensors (potentiometer / hall), 0..3.3 V
 //   paddles  : two buttons to GND (internal pull-ups)
+//   handbrake: a potentiometer like the pedals (optional: PIN_HANDBRAKE = -1 without one)
 //   motor    : DC motor on an H-bridge with PWM + DIR inputs (e.g. BTS7960: RPWM/LPWM)
 
 #include <Arduino.h>
 
-// ---- pins --------------------------------------------------------------------------------------
-const int PIN_ENC_A = 2, PIN_ENC_B = 3;
-const int PIN_THROTTLE = A0, PIN_BRAKE = A1;
-const int PIN_UPSHIFT = 6, PIN_DOWNSHIFT = 7, PIN_START = 8;
-const int PIN_MOTOR_RPWM = 9, PIN_MOTOR_LPWM = 10;   // one PWM per direction (BTS7960 style)
+// ---- pins: the car_inputs board (Seeed XIAO RP2040) ------------------------------------------------
+const int PIN_ENC_A = D6, PIN_ENC_B = D5;                          // J1 steering wheel (swap if right turns read negative)
+const int PIN_THROTTLE = A0, PIN_BRAKE = A1, PIN_HANDBRAKE = A2;   // J2, J3, J4
+const int PIN_UPSHIFT = D3, PIN_DOWNSHIFT = D4;                    // J5, J6 (4.99k pull-ups on the board; no start button)
+const int PIN_MOTOR_RPWM = D9, PIN_MOTOR_LPWM = D10;   // one PWM per direction (BTS7960 style); not on the board (D7-D10 are free)
 
 // ---- calibration constants ---------------------------------------------------------------------
 const float ENC_COUNTS_PER_REV = 2400.0f;   // encoder counts per revolution of its shaft (4x decoding)
@@ -81,7 +82,6 @@ void setup() {
   pinMode(PIN_ENC_B, INPUT_PULLUP);
   pinMode(PIN_UPSHIFT, INPUT_PULLUP);
   pinMode(PIN_DOWNSHIFT, INPUT_PULLUP);
-  pinMode(PIN_START, INPUT_PULLUP);
   pinMode(PIN_MOTOR_RPWM, OUTPUT);
   pinMode(PIN_MOTOR_LPWM, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encISR, CHANGE);
@@ -122,9 +122,12 @@ void loop() {
   if (nowUs - lastSampleUs >= SAMPLE_US) {
     lastSampleUs = nowUs;
     static uint8_t buttons = 0;
-    buttons = debounced(PIN_UPSHIFT, 1, buttons) | debounced(PIN_DOWNSHIFT, 2, buttons) | debounced(PIN_START, 4, buttons);
+    buttons = debounced(PIN_UPSHIFT, 1, buttons) | debounced(PIN_DOWNSHIFT, 2, buttons);
     char out[48];
-    int len = snprintf(out, sizeof(out), "W %ld %d %d %u\n", steer, analogRead(PIN_THROTTLE), analogRead(PIN_BRAKE), buttons);
+    int len = PIN_HANDBRAKE < 0
+      ? snprintf(out, sizeof(out), "W %ld %d %d %u\n", steer, analogRead(PIN_THROTTLE), analogRead(PIN_BRAKE), buttons)
+      : snprintf(out, sizeof(out), "W %ld %d %d %u %d\n", steer, analogRead(PIN_THROTTLE), analogRead(PIN_BRAKE), buttons,
+                 analogRead(PIN_HANDBRAKE));
     // never block here (game closed, host not reading): a blocked loop would also stop the FFB watchdog
     // above and leave the motor at its last torque. Drop the sample instead.
     if (Serial.availableForWrite() >= len) Serial.write(out, len);

@@ -113,9 +113,12 @@ private:
 
 	// home-built wheel: input override and force feedback (CambridgeWheelSubsystem)
 	void ApplyWheelInput(class UCambridgeWheelSubsystem& Wheel);
+	/** The handbrake torque of the wheels it acts on, as a fraction of their MaxHandBrakeTorque (the wheel's lever). */
+	void SetHandbrakeScale(float Scale);
 	float ComputeForceFeedback(const class UCambridgeWheelSubsystem& Wheel, float Delta);
 	float LastRimDeg = 0.0f;
 	float PrevRimDeg = 0.0f;
+	bool bWheelHandbrake = false;
 	float LastSuspension[2] = { 0.0f, 0.0f };
 	double LastWheelLog = 0.0;
 

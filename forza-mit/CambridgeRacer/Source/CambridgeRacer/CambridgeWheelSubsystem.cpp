@@ -40,13 +40,14 @@ namespace
 
 	// test: drive the wheel's buttons / throttle from a shot tour step (a wheel or wheel_sim.py must be connected)
 	FAutoConsoleCommandWithWorldAndArgs WheelTestCmd(TEXT("cr.Wheel.Test"),
-		TEXT("Test: cr.Wheel.Test <seconds> <throttle 0..1> <buttons: 1 right paddle, 2 left, 3 both, 4 start> [brake 0..1] (needs a connected wheel or wheel_sim.py)"),
+		TEXT("Test: cr.Wheel.Test <seconds> <throttle 0..1> <buttons: 1 right paddle, 2 left, 3 both, 4 start> [brake 0..1] [handbrake 0..1] (needs a connected wheel or wheel_sim.py)"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
 			if (UCambridgeWheelSubsystem* W = GI ? GI->GetSubsystem<UCambridgeWheelSubsystem>() : nullptr; W && Args.Num() >= 3)
 			{
-				W->SetTestInput(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atoi(*Args[2]), Args.Num() > 3 ? FCString::Atof(*Args[3]) : 0.0f);
+				W->SetTestInput(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atoi(*Args[2]), Args.Num() > 3 ? FCString::Atof(*Args[3]) : 0.0f,
+					Args.Num() > 4 ? FCString::Atof(*Args[4]) : 0.0f);
 			}
 		}));
 
@@ -117,6 +118,11 @@ void UCambridgeWheelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		CalBrakeMin = BrakeMin;
 		CalBrakeMax = BrakeMax;
 	}
+	if (ValidPedalRange(HandbrakeMin, HandbrakeMax))
+	{
+		CalHandbrakeMin = HandbrakeMin;
+		CalHandbrakeMax = HandbrakeMax;
+	}
 	Thread = FRunnableThread::Create(this, TEXT("CambridgeWheel"), 0, TPri_AboveNormal);
 }
 
@@ -154,6 +160,7 @@ FWheelInputState UCambridgeWheelSubsystem::GetState() const
 	S.bUpshift = (Buttons & 1) != 0;
 	S.bDownshift = (Buttons & 2) != 0;
 	S.bStart = (Buttons & 4) != 0;
+	S.Handbrake = FPlatformTime::Seconds() < TestUntil ? TestHandbrake : Pedal(RawHandbrake, CalHandbrakeMin, CalHandbrakeMax);
 	return S;
 }
 
@@ -238,14 +245,16 @@ EWheelMenuAction UCambridgeWheelSubsystem::ConsumeMenuAction()
 	return EWheelMenuAction::None;
 }
 
-void UCambridgeWheelSubsystem::SetTestInput(float Seconds, float Throttle, int32 InButtons, float Brake)
+void UCambridgeWheelSubsystem::SetTestInput(float Seconds, float Throttle, int32 InButtons, float Brake, float Handbrake)
 {
 	FScopeLock L(&Lock);
 	TestUntil = FPlatformTime::Seconds() + FMath::Max(0.0f, Seconds);
 	TestThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
 	TestButtons = InButtons & 7;
 	TestBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
-	UE_LOG(LogWheel, Display, TEXT("wheel: test input %.2f s, throttle %.2f, buttons %d, brake %.2f"), Seconds, TestThrottle, TestButtons, TestBrake);
+	TestHandbrake = FMath::Clamp(Handbrake, 0.0f, 1.0f);
+	UE_LOG(LogWheel, Display, TEXT("wheel: test input %.2f s, throttle %.2f, buttons %d, brake %.2f, handbrake %.2f"), Seconds, TestThrottle, TestButtons,
+		TestBrake, TestHandbrake);
 }
 
 void UCambridgeWheelSubsystem::SetForceFeedback(float Torque)
@@ -267,8 +276,8 @@ void UCambridgeWheelSubsystem::CentreWheel()
 void UCambridgeWheelSubsystem::ResetPedalCalibration()
 {
 	FScopeLock L(&Lock);
-	CalThrottleMin = CalBrakeMin = MAX_int32;
-	CalThrottleMax = CalBrakeMax = MIN_int32;
+	CalThrottleMin = CalBrakeMin = CalHandbrakeMin = MAX_int32;
+	CalThrottleMax = CalBrakeMax = CalHandbrakeMax = MIN_int32;
 	bPedalCalibrationRequested = true;
 }
 
@@ -288,6 +297,11 @@ void UCambridgeWheelSubsystem::SaveSettings()
 			BrakeMin = CalBrakeMin;
 			BrakeMax = CalBrakeMax;
 		}
+		if (ValidPedalRange(CalHandbrakeMin, CalHandbrakeMax))
+		{
+			HandbrakeMin = CalHandbrakeMin;
+			HandbrakeMax = CalHandbrakeMax;
+		}
 		bPedalCalibrationRequested = !ValidPedalRange(CalThrottleMin, CalThrottleMax) || !ValidPedalRange(CalBrakeMin, CalBrakeMax);
 	}
 	if (bSessionOnly)
@@ -306,14 +320,16 @@ FString UCambridgeWheelSubsystem::GetStatusText() const
 		return Fd >= 0 ? FString::Printf(TEXT("%s (no data)"), *FPaths::GetCleanFilename(OpenPath)) : TEXT("not connected");
 	}
 	const FWheelInputState S = GetState();
-	bool bPedalsCalibrated;
+	bool bPedalsCalibrated, bHandbrakeCalibrated;
 	{
 		FScopeLock L(&Lock);
 		bPedalsCalibrated = ValidPedalRange(CalThrottleMin, CalThrottleMax) && ValidPedalRange(CalBrakeMin, CalBrakeMax);
+		bHandbrakeCalibrated = ValidPedalRange(CalHandbrakeMin, CalHandbrakeMax);
 	}
+	const FString Handbrake = bHandbrakeCalibrated ? FString::Printf(TEXT("  H %.0f%%"), S.Handbrake * 100.0f) : FString();
 	return bPedalsCalibrated
-		? FString::Printf(TEXT("%.0f deg  T %.0f%%  B %.0f%%"), S.SteerDeg, S.Throttle * 100.0f, S.Brake * 100.0f)
-		: FString::Printf(TEXT("%.0f deg  press both pedals"), S.SteerDeg);
+		? FString::Printf(TEXT("%.0f deg  T %.0f%%  B %.0f%%%s"), S.SteerDeg, S.Throttle * 100.0f, S.Brake * 100.0f, *Handbrake)
+		: FString::Printf(TEXT("%.0f deg  press both pedals%s"), S.SteerDeg, *Handbrake);
 }
 
 void UCambridgeWheelSubsystem::Tick(float DeltaTime)
@@ -464,15 +480,21 @@ void UCambridgeWheelSubsystem::Write(const FString& Text)
 
 void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 {
-	// "W <steer> <throttle> <brake> <buttons>", strictly: a damaged line (noise, half a line after a
+	// "W <steer> <throttle> <brake> <buttons> [<handbrake>]", strictly: a damaged line (noise, half a line after a
 	// reconnect) must not move the pedal calibration
 	if (Line[0] == 'W' && (Line[1] == ' ' || Line[1] == '\t'))
 	{
 		const char* P = Line + 1;
-		int32 Steer, Throttle, Brake, Btn;
-		const bool bOk = ParseField(P, -10000000, 10000000, Steer) && ParseField(P, 0, 65535, Throttle)
+		int32 Steer, Throttle, Brake, Btn, Handbrake = 0;
+		bool bOk = ParseField(P, -10000000, 10000000, Steer) && ParseField(P, 0, 65535, Throttle)
 			&& ParseField(P, 0, 65535, Brake) && ParseField(P, 0, 255, Btn);
 		while (bOk && (*P == ' ' || *P == '\t')) { ++P; }
+		const bool bHasHandbrake = bOk && *P != 0;
+		if (bHasHandbrake)
+		{
+			bOk = ParseField(P, 0, 65535, Handbrake);
+			while (bOk && (*P == ' ' || *P == '\t')) { ++P; }
+		}
 		FScopeLock L(&Lock);
 		if (!bOk || *P != 0)
 		{
@@ -482,12 +504,18 @@ void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 		RawSteer = Steer;
 		RawThrottle = Throttle;
 		RawBrake = Brake;
+		RawHandbrake = Handbrake;
 		Buttons = FPlatformTime::Seconds() < TestUntil ? TestButtons : Btn;     // (cr.Wheel.Test)
 		// pedals calibrate themselves: remember the travel seen this session
 		CalThrottleMin = FMath::Min(CalThrottleMin, RawThrottle);
 		CalThrottleMax = FMath::Max(CalThrottleMax, RawThrottle);
 		CalBrakeMin = FMath::Min(CalBrakeMin, RawBrake);
 		CalBrakeMax = FMath::Max(CalBrakeMax, RawBrake);
+		if (bHasHandbrake)
+		{
+			CalHandbrakeMin = FMath::Min(CalHandbrakeMin, RawHandbrake);
+			CalHandbrakeMax = FMath::Max(CalHandbrakeMax, RawHandbrake);
+		}
 		const double Now = FPlatformTime::Seconds();
 		const int32 Rising = Buttons & ~LastButtons;
 		if (Rising & 1) { bEdgeUp = true; EdgeUpTime = Now; }
