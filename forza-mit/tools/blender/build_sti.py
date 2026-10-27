@@ -6,12 +6,14 @@ Optional args after "--":  --no-livery  (reuse the existing livery PNGs)   --ren
 Needs `uv` on PATH: the livery is drawn with PIL by tools/blender/sti_livery.py in the tools/mapgen environment.
 
 Pipeline (modules in tools/blender/):
-    sti_body.py      quad control cage (stations x rows, left half) -> Mirror -> Subdivision Surface (level 3) with
-                     creases; openings cut with exact booleans (arches, bugeye lamps, tail lamps, grille, intake,
-                     fog pockets, plate recess) + return flanges; split into paint / glass / trim + window rubbers
-    sti_details.py   lamps (domed lenses, reflectors, projectors), honeycomb mesh, badge, fog lamps, lip, scoop,
-                     cowl, wipers, mirrors, handles, markers, wing (+ stop lamp), exhaust, liners, under-tray,
-                     antenna, 3D STi/WRX badges, intake bar, skirt lips, diffuser strakes, underbody mechanicals
+    sti_body.py      quad control cage (stations x rows, left half, closed through a floor pan) -> Mirror ->
+                     Subdivision Surface (level 3) with creases; openings cut with exact booleans (arches, bugeye
+                     lamps, tail lamps, grille, intake, fog pockets, plate recess) + return flanges; the arch cutter
+                     walls are kept as closed wheel wells; split into paint / glass / trim / floor + window rubbers
+    sti_details.py   lamps (clear domed covers over chrome / red faceted optics, projectors, bulbs), honeycomb mesh,
+                     badge, fog lamps, lip, scoop, cowl, wipers, mirrors, handles, markers, wing (+ stop lamp),
+                     exhaust, antenna, 3D STi/WRX badges, intake bar, skirt lips, diffuser strakes, underbody
+                     mechanicals (hanging below the floor pan)
     sti_wheels.py    tyre, gold 5-twin-spoke rim, drilled/slotted disc, Brembo-style caliper (wheel-local)
     sti_interior.py  liner, dash, RHD steering wheel, seats, console
     sti_driver.py    static driver in the RHD seat: suit, gloves, harness, helmet + visor
@@ -73,18 +75,22 @@ SPEC = {
                   notes="Tinted window glass, translucent (two-sided not needed). Interior visible through it."),
     "black": dict(base_color=[0.011, 0.011, 0.012], metallic=0.0, roughness=0.42,
                   notes="Black plastics: window rubber, B-pillar, grille surround, lip, skirts trim, mirror stalks, "
-                        "wipers, wheel-well liners, lamp housings."),
+                        "wipers, lamp housings, tail-lamp dividers; also the underseal: floor pan, inner sills, "
+                        "bumper undersides and the wheel wells (closed, part of the body shell)."),
     "mesh": dict(base_color=[0.012, 0.012, 0.013], metallic=0.3, roughness=0.45,
                  notes="Honeycomb grille / intake mesh (real geometry, opaque)."),
     "lens": dict(base_color=[0.92, 0.94, 0.96], metallic=0.0, roughness=0.02, opacity=0.12,
-                 notes="Clear headlamp / fog-lamp covers. Translucent; the chrome reflectors are behind it."),
-    "red": dict(base_color=[0.36, 0.004, 0.006], metallic=0.0, roughness=0.05, emissive=[0.16, 0.0, 0.0],
-                notes="Tail-lamp lenses (opaque, deep glossy red; the lens carries raised rings and the reverse "
-                      "lamp is a separate clear section). Slight emissive glow; raise it for brake lights."),
+                 notes="Clear lamp covers (headlamps, fog lamps, tail lamps), projector / bulb domes. Translucent; "
+                       "the chrome and red optics are behind it."),
+    "red": dict(base_color=[0.68, 0.02, 0.025], metallic=0.0, roughness=0.04, opacity=0.45,
+                transmittance=[0.95, 0.05, 0.04], emissive=[0.02, 0.0, 0.0],
+                notes="Red lamp lenses: tail-lamp covers, bumper reflectors, wing stop lamp. Red-tinted translucent "
+                      "(thin translucent: transmittance = tint of the chrome optics behind, opacity = coverage of "
+                      "the red film), so they read red in any light. Raise emissive for brake lights."),
     "amber": dict(base_color=[0.85, 0.30, 0.02], metallic=0.0, roughness=0.15, emissive=[0.05, 0.015, 0.0],
                   notes="Side markers / indicators."),
     "chrome": dict(base_color=[0.92, 0.92, 0.94], metallic=1.0, roughness=0.08,
-                   notes="Lamp reflectors, exhaust tip, badges, mirror glass."),
+                   notes="Lamp reflectors and housings, projector shrouds, exhaust tip, badges, mirror glass."),
     "plate": dict(texture="sti_plate.png", normal_texture="sti_plate_normal.png", metallic=0.1, roughness=0.35,
                   notes="US-size (12x6 in) licence plates, front and rear; fictional artwork. UV0 maps the plate "
                         "face to the whole texture (other faces map inside it too, plain white border). Normal map "
@@ -104,12 +110,17 @@ SPEC = {
     "driver_visor": dict(base_color=[0.012, 0.014, 0.018], metallic=0.0, roughness=0.03, opacity=0.85,
                          notes="Dark-smoked visor: glossy, slightly translucent (the dark padding cavity behind "
                                "the eyeport shows faintly)."),
-    "rim": dict(base_color=[0.78, 0.58, 0.26], metallic=1.0, roughness=0.32,
-                notes="Gold 17-inch 5-twin-spoke wheel. Wheel part: centred at origin, axle Y, outer face +Y."),
-    "tire": dict(base_color=[0.028, 0.028, 0.030], metallic=0.0, roughness=0.88, normal_texture="sti_tire_normal.png",
-                 notes="225/45R17 tyre with tread and sidewall detail. Wheel part (spins)."),
+    "rim": dict(base_color=[0.78, 0.58, 0.26], metallic=1.0, roughness=0.34, clearcoat=1.0, clearcoat_roughness=0.05,
+                notes="Gold-painted 17-inch 5-twin-spoke wheel (metallic gold under a clear coat). Wheel part: "
+                      "centred at origin, axle Y, outer face +Y."),
+    "tire": dict(base_color=[0.032, 0.032, 0.034], metallic=0.0, roughness=0.88, normal_texture="sti_tire_normal.png",
+                 roughness_by_v=[0.84, 0.66, 0.90],
+                 notes="225/45R17 tyre with tread and sidewall detail. Wheel part (spins). roughness_by_v: [V threshold "
+                       "(glTF/Unreal V, top-left origin), sidewall roughness (V below: the sidewall band of the normal "
+                       "map), tread roughness (V above: every other face sits at V 0.9)]."),
     "brake": dict(base_color=[0.36, 0.36, 0.37], metallic=1.0, roughness=0.42,
-                  notes="Drilled/slotted disc + hat. Wheel part (spins with the wheel)."),
+                  notes="Ventilated (two plates + radial vanes), drilled/slotted disc + hat, lug nuts. Wheel part "
+                        "(spins with the wheel)."),
     "caliper": dict(base_color=[0.80, 0.55, 0.10], metallic=0.0, roughness=0.35,
                     notes="Gold Brembo-style caliper. Wheel-local like the others but must NOT spin: attach to the "
                           "wheel hub/knuckle (steers with the wheel, no rotation about the axle)."),
@@ -172,6 +183,20 @@ def self_check():
                 f"{'OK' if ok and mats == 1 else 'CHECK'}")
 
 
+def fill_invalid(v, w):
+    """Pull-push hole filling: texels with weight 0 take the weighted average of the nearest valid texels
+    (coarse-to-fine pyramid). v, w: square power-of-two float arrays."""
+    import numpy as np
+    if v.shape[0] <= 1 or w.min() > 0:
+        return v
+    n = v.shape[0] // 2
+    w2 = w.reshape(n, 2, n, 2).sum((1, 3))
+    v2 = (v * w).reshape(n, 2, n, 2).sum((1, 3))
+    vc = np.where(w2 > 0, v2 / np.maximum(w2, 1e-6), 0.0)
+    vc = fill_invalid(vc, (w2 > 0).astype(np.float32))
+    return np.where(w > 0, v, np.repeat(np.repeat(vc, 2, 0), 2, 1))
+
+
 def bake_ao(res=2048, samples=96):
     """Bake ambient occlusion of the whole car (all exported parts + the four wheel sets) into the paint UV0.
     Writes sti_paint_ao.png (linear grey, 1 = open). Cycles, fixed seed: deterministic per device."""
@@ -218,10 +243,17 @@ def bake_ao(res=2048, samples=96):
     paint.select_set(True)
     bpy.context.view_layer.objects.active = paint
     t = time.time()
-    bpy.ops.object.bake(type="AO", margin=6, use_clear=True)
-    px = np.array(img.pixels[:], np.float32).reshape(res, res, 4)[..., 0]
+    SENTINEL = 9.0                     # texels the bake never writes keep it (float image, no clear)
+    img.pixels[:] = np.full(res * res * 4, SENTINEL, np.float32)
+    bpy.ops.object.bake(type="AO", margin=6, use_clear=False)
+    raw = np.array(img.pixels[:], np.float32).reshape(res, res, 4)[..., 0]
+    # Off-island texels and fully occluded (= hidden) paint, e.g. the hood under the scoop shell, are filled
+    # from their surroundings (pull-push): with a constant dark fill the texture mips bled dark halos onto the
+    # visible paint around every window, arch and the scoop at distance.
+    valid = (raw < SENTINEL - 1.0) & (raw > 0.08)
+    px = fill_invalid(np.where(valid, np.clip(raw, 0, 1), 0.0), valid.astype(np.float32))
     # soften the shadows a little (it is multiplied into a glossy car paint) and keep the hidden patch white
-    px = 0.25 + 0.75 * np.clip(px, 0, 1)
+    px = 0.35 + 0.65 * np.clip(px, 0, 1)
     k = res / sti_uv.TEX
     px[: int(48 * k), -int(48 * k):] = 1.0       # (rows are bottom-up in Blender images: bottom-right corner)
     rgba = np.dstack([px, px, px, np.ones_like(px)]).ravel()
@@ -273,7 +305,7 @@ def main():
 
     # --- body shell ------------------------------------------------------------------------------
     skin = sti_body.body_skin()
-    src_me = skin.data.copy()
+    src_me = sti_uv.faired_normals(skin.data.copy())     # normal-transfer source: faired normal field
     src_bm = bmesh.new()
     src_bm.from_mesh(src_me)
     src_bvh = BVHTree.FromBMesh(src_bm)
@@ -296,15 +328,25 @@ def main():
     fl_paint = flanges.copy()
     bmesh.ops.delete(fl_paint, geom=[f for f in fl_paint.faces if f[fl_paint.faces.layers.int.get("zone")] != 0], context="FACES")
     fl_black = flanges.copy()
-    bmesh.ops.delete(fl_black, geom=[f for f in fl_black.faces if f[fl_black.faces.layers.int.get("zone")] == 0], context="FACES")
+    bmesh.ops.delete(fl_black, geom=[f for f in fl_black.faces if f[fl_black.faces.layers.int.get("zone")] in (0, 6)],
+                     context="FACES")
+    fl_chrome = flanges.copy()       # zone 6: headlamp housing walls
+    bmesh.ops.delete(fl_chrome, geom=[f for f in fl_chrome.faces if f[fl_chrome.faces.layers.int.get("zone")] != 6],
+                     context="FACES")
     flanges.free()
     parts.add("paint", paint)
     parts.add("paint", fl_paint, smooth=50)
-    parts.add("glass", split["glass"], smooth=180)
+    gl = split["glass"]                                 # body glass: faired normals at export (like the paint)
+    gsl = gl.verts.layers.int.new("skin")
+    for v in gl.verts:
+        v[gsl] = 1
+    parts.add("glass", gl, smooth=180)
     parts.add("black", split["black"], smooth=180)
     parts.add("black", split["rubber"], smooth=60)
     parts.add("black", split["frit"], smooth=60)
     parts.add("black", fl_black, smooth=50)
+    parts.add("chrome", fl_chrome, smooth=50)
+    parts.add("black", split["floor"], smooth=60)       # floor pan, inner sills, bumper undersides, wheel wells
 
     # --- details, lamps, wheels -----------------------------------------------------------------
     sti_details.build(parts, src_bvh, patches)
@@ -326,6 +368,9 @@ def main():
         me = parts.mesh(part)
         if part == "paint":
             me = sti_uv.finish_paint(me, src_me, OUT, ARGS)
+        elif part == "glass":
+            sti_uv.box_uv(me)
+            me = sti_uv.transfer_skin_normals(me, src_me, "sti_glass")
         elif part == "tire":
             sti_wheels.tire_uv(me)
         elif part in ("plate", "driver_helmet"):

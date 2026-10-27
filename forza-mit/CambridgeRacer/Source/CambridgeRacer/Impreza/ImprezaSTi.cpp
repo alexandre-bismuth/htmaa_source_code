@@ -233,8 +233,7 @@ void AImprezaSTi::Tick(float Delta)
 		Wheel->SetForceFeedback(0.0f);
 	}
 	const bool bWheel = Wheel && Wheel->IsActive() && !bMenu;
-	// keyboard / gamepad: holding brake at a standstill reverses. Real pedals: see ApplyWheelInput
-	GetChaosVehicleMovement()->bReverseAsBrake = !bWheel;
+	bWheelDriving = bWheel;
 	if (bWheel)
 	{
 		ApplyWheelInput(*Wheel);
@@ -349,24 +348,28 @@ void AImprezaSTi::UpdateEngine(float Delta)
 	const FRichCurve* Curve = Move->EngineSetup.TorqueCurve.GetRichCurveConst();
 
 	// clutch slip at launch: engine held near ClutchSlipRPM (by how far the throttle is open).
-	// In reverse on keyboard / gamepad the brake input drives the car (Chaos bReverseAsBrake), so it
-	// counts as the throttle here; otherwise reverse never boosts or slips the clutch and crawls.
+	// (In automatic reverse the brake is the throttle: ApplyDriverInputs.)
 	float EngineRPM = RPM;
 	float ClutchScale = 1.0f;
 	const int32 Gear = Move->GetCurrentGear();
-	const float DriveThrottle = (Gear < 0 && Move->bReverseAsBrake) ? FMath::Max(LastFilteredThrottle, Move->GetBrakeInput()) : LastFilteredThrottle;
-	if ((Gear == 1 || Gear == -1) && RPM < ClutchSlipRPM && DriveThrottle > 0.05f)
+	const float DriveThrottle = LastFilteredThrottle;
+	EngineThrottle = DriveThrottle;
+	const float SlipRPM = Gear < 0 ? ReverseSlipRPM : ClutchSlipRPM;
+	if ((Gear == 1 || Gear == -1) && RPM < SlipRPM && DriveThrottle > 0.05f)
 	{
-		EngineRPM = FMath::Lerp(RPM, ClutchSlipRPM, DriveThrottle);
+		EngineRPM = FMath::Lerp(RPM, SlipRPM, DriveThrottle);
 		ClutchScale = Curve->Eval(EngineRPM) / FMath::Max(Curve->Eval(RPM), 1.0f);
 	}
 
-	// turbo spool, driven by the engine's own rpm
-	const float Target = DriveThrottle;
+	// turbo spool, driven by the engine's own rpm (none in reverse)
+	const float Target = Gear < 0 ? 0.0f : DriveThrottle;
 	const float Tau = Target > Boost
 		? FMath::GetMappedRangeValueClamped(FVector2f(2000.0f, 4500.0f), FVector2f(SpoolTimeLowRPM, SpoolTimeHighRPM), EngineRPM)
 		: BoostDecayTime;
 	Boost += (Target - Boost) * (1.0f - FMath::Exp(-Delta / Tau));
+	// the pressure that makes (gauge, turbo sound): the VF30 gives little below ~2000 rpm and full boost from ~3600. The
+	// torque curve already holds the low-rpm torque, so this is not fed back into the physics
+	BoostPressure = Boost * FMath::SmoothStep(1800.0f, 3600.0f, EngineRPM);
 
 	// The torque curve is the steady-state full-boost curve; boost only adds the transient lag.
 	// reverse limiter: Chaos doesn't rev-limit reverse (a real car tops out ~60 km/h in reverse);
@@ -379,6 +382,51 @@ void AImprezaSTi::UpdateEngine(float Delta)
 		AppliedMaxTorque = NewMaxTorque;
 		Move->SetMaxEngineTorque(NewMaxTorque);
 	}
+}
+
+void AImprezaSTi::ApplyDriverInputs(float Delta)
+{
+	// two independent pedals for every input (keys, gamepad triggers, the wheel's pedals): analog braking and left-foot
+	// braking work. (Chaos' bReverseAsBrake would make any brake pressure above 1 m/s full braking, and engaged reverse
+	// the moment the car slowed below that: braking to a stop launched it backwards, engine and turbo screaming.)
+	// Automatic reverse, as in Forza: the brake holding the car at a standstill for ReverseDelay engages reverse, where
+	// the pedals swap (the brake drives, the throttle brakes); the throttle at a standstill goes back to first. With the
+	// wheel only on the automatic gearbox (in manual its paddles select reverse).
+	UChaosWheeledVehicleMovementComponent* Move = GetChaosVehicleMovement();
+	Move->bReverseAsBrake = false;
+	float Throttle = DriverThrottle, Brake = DriverBrake;
+	const UTimeTrialSubsystem* TT = GetWorld()->GetSubsystem<UTimeTrialSubsystem>();
+	if (TT && TT->GetState() == ETimeTrialState::Finished)
+	{
+		// the results screen brings the car to a stop (UTimeTrialSubsystem): a throttle held through the finish (or the
+		// wheel's pedals) must not drive on, nor a brake held there engage reverse
+		Throttle = 0.0f;
+		Brake = FMath::Max(Brake, FMath::Abs(Move->GetForwardSpeed()) > 83.0f ? 1.0f : 0.0f);
+	}
+	else if (bAutoShift || !bWheelDriving)
+	{
+		// (not while the car is held: the grid countdown, the 3-2-1 after back on track, the launch menu; a brake held
+		// there would otherwise drive it backwards at GO)
+		const bool bHeld = Move->IsParked() || (TT && (TT->GetState() == ETimeTrialState::Countdown || TT->IsResetHolding()));
+		const bool bStopped = FMath::Abs(Move->GetForwardSpeed()) < 100.0f;     // cm/s
+		const bool bHolding = !bHeld && bStopped && Move->GetTargetGear() >= 0 && Brake > 0.1f && Throttle < 0.05f;
+		ReverseHold = bHolding ? ReverseHold + Delta : 0.0f;
+		if (bHolding && ReverseHold >= ReverseDelay)
+		{
+			Move->SetTargetGear(-1, true);
+		}
+		else if (bStopped && Move->GetTargetGear() < 0 && Throttle > 0.05f && Brake < 0.1f)
+		{
+			Move->SetTargetGear(1, true);
+		}
+		if (Move->GetTargetGear() < 0)
+		{
+			Swap(Throttle, Brake);
+		}
+	}
+	DriverPedal = Throttle;
+	Move->SetThrottleInput(FilterThrottle(Throttle, Delta));
+	Move->SetBrakeInput(Brake);
 }
 
 void AImprezaSTi::CycleTractionControl()
@@ -516,28 +564,9 @@ void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 	const float SpeedMph = FMath::Abs(Move->GetForwardSpeedMPH());
 	const float Curve = FMath::Max(Move->SteeringSetup.SteeringCurve.GetRichCurveConst()->Eval(SpeedMph), 0.05f);
 	Move->SetSteeringInput(FMath::Clamp(S.SteerDeg / Half / Curve, -1.0f, 1.0f));
-	// two independent pedals: left-foot braking works. Automatic (as in Forza): the brake held at a standstill
-	// engages reverse, where the pedals swap (the brake drives, the throttle brakes), and the throttle at a
-	// standstill goes back to first. (Chaos' bReverseAsBrake would make any brake pressure full braking.)
-	float Throttle = S.Throttle, Brake = S.Brake;
-	if (bAutoShift)
-	{
-		const bool bStopped = FMath::Abs(Move->GetForwardSpeed()) < 100.0f;     // cm/s, as Chaos' keyboard reverse
-		if (bStopped && Move->GetTargetGear() >= 0 && Brake > 0.1f && Throttle < 0.05f)
-		{
-			Move->SetTargetGear(-1, true);
-		}
-		else if (bStopped && Move->GetTargetGear() < 0 && Throttle > 0.05f && Brake < 0.1f)
-		{
-			Move->SetTargetGear(1, true);
-		}
-		if (Move->GetTargetGear() < 0)
-		{
-			Swap(Throttle, Brake);
-		}
-	}
-	DriverThrottle = Throttle;
-	Move->SetBrakeInput(Brake);
+	// the pedals (reverse and the pedal swap: ApplyDriverInputs)
+	DriverThrottle = S.Throttle;
+	DriverBrake = S.Brake;
 	// the handbrake lever: the braking stops growing past ~40 % of MaxHandBrakeTorque (tested from 70 km/h), so the
 	// first 90 % of the travel spreads 0..40 % (it brakes more and more), the last 10 % goes to full torque (= Space).
 	// While pulled it is applied every frame (leaving the results releases it); its release acts once, so Space / the
@@ -559,13 +588,26 @@ void AImprezaSTi::ApplyWheelInput(UCambridgeWheelSubsystem& Wheel)
 	const UTimeTrialSubsystem* TT = GetWorld() ? GetWorld()->GetSubsystem<UTimeTrialSubsystem>() : nullptr;
 	if (!TT || TT->GetState() != ETimeTrialState::Finished)
 	{
-		if (Wheel.ConsumeUpshift())
+		// both paddles together are "back on track" / restart (UTimeTrialSubsystem), not two shifts: both in one sample
+		// do nothing, and the second paddle of a chord (within 0.15 s) puts back the gear the first one selected
+		const bool bUp = Wheel.ConsumeUpshift(), bDown = Wheel.ConsumeDownshift();
+		const double Now = GetWorld()->GetTimeSeconds();
+		if ((bUp && S.bDownshift) || (bDown && S.bUpshift))
 		{
-			ShiftUp();
+			if (!bUp || !bDown)
+			{
+				if (!bAutoShift && Now - PaddleShiftTime < 0.15)
+				{
+					RequestGear(GearForShift(), GearBeforePaddle);
+				}
+				PaddleShiftTime = -100.0;
+			}
 		}
-		if (Wheel.ConsumeDownshift())
+		else if (bUp || bDown)
 		{
-			ShiftDown();
+			GearBeforePaddle = GearForShift();
+			PaddleShiftTime = Now;
+			bUp ? ShiftUp() : ShiftDown();
 		}
 	}
 	LastRimDeg = S.SteerDeg;

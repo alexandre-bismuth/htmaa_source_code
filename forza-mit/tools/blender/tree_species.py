@@ -11,6 +11,13 @@ BASE = {
     "flare": 0.35, "buttress": 0.12, "buttress_lobes": 5,
     "min_branch_z": 1.0, "shell": 2.2, "interior_cull": 0.75,
     "leaf_roughness": 0.55, "leaf_translucency": 0.3,
+    # GPU cost (tree_gen.leaf_mesh): the leaves of a twig are one connected spray; 0.6x as many leaves at the same
+    # total area (1.29x the length); leaves hidden by the rest of the crown (mean transmittance to outside < 0.05..0.25)
+    # dropped, the rest grown (<= 1.15x) until the crown's projected coverage is back (less hidden area to rasterise)
+    "leaf_connect": True, "leaf_count_scale": 0.6, "prune_vis": (0.05, 0.25),
+    # bark: leaf-bearing twigs as one straight segment, every 2nd ring on the branches (half the bark triangles);
+    # trunk runs 0.3 m further into the ground
+    "twig_rings": 2, "bark_keep_every": {2: 2}, "root_sink": 0.3,
     "levels": [
         # 0 trunk
         {"seg": 0.3, "tropism": 0.3, "wobble": 0.012, "tip_frac": 0.25, "taper_pow": 0.8},
@@ -57,6 +64,8 @@ OAK = merge(BASE, {
              "face_up": 1.0, "face_out": 0.7, "parent_from": 0.6},
     "leaf_colors": [(0.20, 0.31, 0.09), (0.17, 0.27, 0.08), (0.25, 0.35, 0.11)],
     "leaf_roughness": 0.45,
+    # big leaves already: fewer of them only up to 1.15x the length (count barely matters for distant cost)
+    "leaf_count_scale": 0.75, "prune_grow_max": 1.08,
 })
 
 HONEYLOCUST = merge(BASE, {
@@ -81,6 +90,7 @@ PLANE = merge(BASE, {
              "tip_cluster": 2, "tip_angle": 35, "per_node": 1, "droop": 0.25, "bend": 0.12, "fold": 0.12,
              "face_up": 1.0, "face_out": 0.6, "parent_from": 0.6},
     "leaf_colors": [(0.24, 0.34, 0.11), (0.21, 0.31, 0.10), (0.28, 0.38, 0.13)],
+    "leaf_count_scale": 0.75, "prune_grow_max": 1.08,
 })
 
 BIRCH = merge(BASE, {
@@ -159,12 +169,12 @@ def V(base, **kw):
 
 
 def variants():
-    return {
+    out = {
         # northern red oak, mature: broad rounded crown on stout spreading limbs (decurrent)
         "oak_a": V(OAK, height=17.0, crown_base=3.4, crown_radius=8.0, first_branch=3.0,
                    envelope=[(0, 0.55), (0.2, 0.9), (0.45, 1.0), (0.7, 0.9), (0.88, 0.62), (1, 0.15)],
                    trunk_radius=0.33, trunk_frac=0.55, fork=3, fork_angle=28, fork_len=0.8, fork_radius=0.7,
-                   min_leaf_z=3.0, leaf_target=52000, bark_tint=[0.72, 0.7, 0.68],
+                   min_leaf_z=3.0, leaf_target=52000, bark_tint=[0.72, 0.7, 0.68], prune_vis=(0.02, 0.06),
                    levels=[{}, {"count": 8, "angle": (62, 45), "radius_ratio": 0.6}]),
         # pin oak: central leader, pyramidal, drooping lower / horizontal middle / ascending upper limbs
         "oak_b": V(OAK, height=16.0, crown_base=2.8, crown_radius=5.6, first_branch=2.6,
@@ -196,11 +206,11 @@ def variants():
         "plane_a": V(PLANE, height=20.0, crown_base=4.2, crown_radius=9.0, first_branch=3.6,
                      envelope=[(0, 0.6), (0.2, 0.92), (0.5, 1.0), (0.75, 0.88), (0.92, 0.55), (1, 0.12)],
                      trunk_radius=0.42, trunk_frac=0.6, fork=3, fork_angle=24, fork_len=0.8, fork_radius=0.68,
-                     min_leaf_z=3.6, leaf_target=32000,
+                     min_leaf_z=3.6, leaf_target=32000, prune_vis=(0.02, 0.06),
                      levels=[{}, {"count": 9, "angle": (66, 42), "radius_ratio": 0.58}]),
         "plane_b": V(PLANE, height=12.0, crown_base=3.0, crown_radius=4.8, first_branch=2.6, seed=2,
                      envelope=[(0, 0.65), (0.25, 0.95), (0.5, 1.0), (0.8, 0.75), (1, 0.12)],
-                     trunk_radius=0.2, trunk_frac=0.8, fork=0, min_leaf_z=2.6, leaf_target=19000,
+                     trunk_radius=0.2, trunk_frac=0.8, fork=0, min_leaf_z=2.6, leaf_target=19000, prune_vis=(0.03, 0.15),
                      levels=[{}, {"count": 15, "angle": (65, 40), "radius_ratio": 0.5}]),
         # ---- birch: river birch clump (tan peeling bark) and a single-stem white birch
         "birch_a": V(BIRCH, height=11.0, crown_base=2.4, crown_radius=4.6, first_branch=2.2, stems=3, stem_lean=9, stem_offset=0.05,
@@ -270,6 +280,26 @@ def variants():
                               {"per_m": 2.0, "wobble": 0.08}, {"per_m": 5.0, "length": (0.12, 0.3),
                                                                 "angle": (70, 60)}]),
     }
+    for name, v in out.items():
+        v["autumn"] = AUTUMN.get(name) or AUTUMN[name.split("_")[0]]
+    return out
+
+
+# Late-October colour (Cambridge, ~Oct 25): the leaf material turns a per-tree random share of the leaves (UV0.x
+# rank below max * random^2: most trees stay green, a few are well on) to these sRGB colours. Kept tasteful:
+# red maples and honey locusts are the most advanced, Norway maples / planes / lindens barely started.
+AUTUMN = {
+    "oak": {"max": 0.25, "colors": [(0.45, 0.21, 0.09), (0.50, 0.32, 0.13)]},            # russet / bronze
+    "honeylocust": {"max": 0.40, "colors": [(0.72, 0.62, 0.15), (0.62, 0.56, 0.16)]},    # gold
+    "plane": {"max": 0.12, "colors": [(0.55, 0.45, 0.20), (0.48, 0.38, 0.18)]},          # dull yellow-brown
+    "birch": {"max": 0.35, "colors": [(0.74, 0.63, 0.14), (0.66, 0.58, 0.16)]},
+    "elm": {"max": 0.20, "colors": [(0.66, 0.58, 0.16), (0.58, 0.52, 0.17)]},
+    "maple": {"max": 0.25, "colors": [(0.72, 0.58, 0.12), (0.62, 0.52, 0.14)]},           # Norway maple: yellow
+    "maple_b": {"max": 0.45, "colors": [(0.56, 0.16, 0.07), (0.68, 0.34, 0.10)]},         # red maple: red / orange
+    "linden": {"max": 0.18, "colors": [(0.64, 0.58, 0.18), (0.55, 0.53, 0.20)]},
+    "ornamental": {"max": 0.25, "colors": [(0.56, 0.20, 0.10), (0.64, 0.38, 0.13)]},     # cherry / pear
+    "ginkgo": {"max": 0.22, "colors": [(0.78, 0.66, 0.10), (0.70, 0.62, 0.12)]},
+}
 
 
 # genus -> variant names (weights equal). Built from the play-area inventory; conifers have no model.

@@ -4,6 +4,9 @@ prop meshes (lamp posts / cobrahead poles) that have no free model.
 Usage:  uv run props.py mit_core
 Output: data/processed/<region>/props/props.json   [{type, x, y, z (UE cm), yaw, scale}]
         data/processed/common/props/*.glb          generated pole meshes
+Needs:  data/processed/common/props/parked_cars.json (tools/blender/parked_cars.py) for the parked cars ("parked_<body>",
+        see place_parked; skipped without it) and CambridgeRacer/Tracks/<region>.json (events they must keep clear of).
+        Check: uv run checks/parked_check.py <region>
 
 Trees: live street trees (SiteType "Tree") + MIT campus trees (Ownership "MIT"), target height from
 trunk diameter (inches DBH) with a simple urban allometry: H = 4 m + 0.55 m/in, clamped to 4..22 m.
@@ -20,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 from shapely.geometry import MultiPoint, Point, Polygon, box, shape
-from shapely.ops import transform, unary_union
+from shapely.ops import nearest_points, transform, unary_union
 from shapely.prepared import prep
 
 import buildings3d
@@ -415,6 +418,420 @@ def write_furniture_meshes(out):
                                boxmesh(1.94, -0.75, 0.15, 1.97, 0.3, 2.3)])
 
 
+# ------------------------------------------------------------------------------------------------ parked cars
+# Static parked cars (tools/blender/parked_cars.py meshes, prop type "parked_<body>"), parallel to the curb with the
+# kerb-side wheels ~0.25 m off the kerb, or nose-in in marked lot stalls. Where Cambridge parks:
+#   metered spaces (TRAFFIC_MeteredParkingSpaces: one car per space, centred in it; not "Permanently Removed"/"Proposed"),
+#   marked on-street spaces (TRAFFIC_PavementMarkings PM-PARKING: T-marks and lane lines -> that curb has parking),
+#   local streets (TRANS_Centerlines MajorRoad None, not restricted ways / alleys) by kerb-to-kerb width: >= 9 m both
+#   sides, 7-9 m one side (per street segment), minor arterials (MajorRoad 2) >= 11.5 m both sides except the campus
+#   streets in NO_PARK_STREETS, never on principal arterials (Mass Ave, Memorial Dr, Mt Auburn St) outside meters,
+#   surface lots (BASEMAP_ParkingLots stall lines PM-PARKING-OS: one car between two adjacent stall lines).
+# Never: within PARK_JUNCTION_M + half the widest street of a junction, PARK_CROSSWALK_M of a crosswalk / stop line,
+# PARK_HYDRANT_M of a hydrant, PARK_DRIVEWAY_M of a driveway, PARK_BUS_M of a bus shelter, on bridges / alleys, in a
+# building, or within PARK_LINE_CLEAR_M (footprint to polyline) of any event's racing line, inside any gate band
+# (PARK_GATE_ALONG_M along the route x gate width + PARK_GATE_SIDE_M), any start box, or near the spawns.
+# Densities: occupancy per block / lot (gaps, not bumper to bumper); body type by the fleet weights in parked_cars.json.
+PARKED_JSON = ROOT / "data/processed/common/props/parked_cars.json"
+PARK_KERB_GAP = 0.25          # m from the kerb line to the car's kerb-side flank
+PARK_JUNCTION_M = 10.0        # m past the cross street's half width
+PARK_CROSSWALK_M = 6.0        # MA: 20 ft from a crosswalk
+PARK_HYDRANT_M = 3.0          # MA: 10 ft from a hydrant
+PARK_DRIVEWAY_M = 1.0
+PARK_BUS_M = 15.0
+PARK_LINE_CLEAR_M = 3.5       # footprint (incl. mirrors) to any racing line
+PARK_GATE_ALONG_M = 5.0       # each side of a gate, along the route (pylons + curtain + a car length of slack)
+PARK_GATE_SIDE_M = 3.0        # beyond the gate's half width
+PARK_START_M = 12.0           # around a start box / start line
+PARK_SPAWN_M = 25.0
+OCC_METER, OCC_MARKED, OCC_RESID, OCC_LOT = 0.72, 0.66, 0.62, (0.30, 0.75)
+NO_PARK_STREETS = {"Vassar St", "Ames St", "Memorial Dr", "Binney St", "Galileo Galilei Way", "Edwin H Land Blvd",
+                   "Land Blvd", "Monsignor OBrien Hwy", "Msgr OBrien Hwy", "Albany St", "Harvard Bridge", "Longfellow Bridge",
+                   "Massachusetts Ave", "Mt Auburn St", "Main St", "Fresh Pond Pkwy", "Soldiers Field Rd"}
+
+
+def _rect(cx, cy, hx, hy, L, W):
+    """Footprint polygon: centre, unit heading (hx, hy), length, width."""
+    ax, ay = hx * L / 2, hy * L / 2
+    bx, by = -hy * W / 2, hx * W / 2
+    return Polygon([(cx + ax + bx, cy + ay + by), (cx - ax + bx, cy - ay + by), (cx - ax - bx, cy - ay - by),
+                    (cx + ax - bx, cy + ay - by)])
+
+
+def parking_exclusions(load, region, cw):
+    """-> dict name: geometry of the places no parked car may touch (ENU m) + the event geometry for the check."""
+    from shapely.geometry import LineString
+    from shapely.strtree import STRtree
+    ex = {}
+    # junctions: radius = PARK_JUNCTION_M + half the widest street there (width measured across each centreline)
+    edge = cw.boundary
+    cl = [(shape(f["geometry"]), f["properties"]) for f in load("TRANS_Centerlines") if f.get("geometry")]
+    widths = []
+    for g, p in cl:
+        ls = g if g.geom_type == "LineString" else max(g.geoms, key=lambda q: q.length)
+        widths.append(street_width(cw, ls) or 10.0)
+    tree = STRtree([g for g, _ in cl])
+    circles = []
+    for f in load("TRANS_Intersections"):
+        if not f.get("geometry"):
+            continue
+        n = shape(f["geometry"])
+        near = tree.query(n.buffer(1.0))
+        w = max([widths[i] for i in near] or [10.0])
+        circles.append(n.buffer(PARK_JUNCTION_M + 0.5 * min(w, 30.0), 16))
+    ex["junction"] = unary_union(circles)
+    pm = load("TRAFFIC_PavementMarkings")
+    ex["crosswalk"] = unary_union([shape(f["geometry"]).buffer(PARK_CROSSWALK_M, 6) for f in pm
+                                   if f.get("geometry") and f["properties"].get("TYPE") in ("PM-CROSSWALK", "PM-RAISE-CW")])
+    ex["stopline"] = unary_union([shape(f["geometry"]).buffer(4.0, 6) for f in pm
+                                  if f.get("geometry") and f["properties"].get("TYPE") == "PM-STOPLINE"])
+    ex["hydrant"] = unary_union([shape(f["geometry"]).buffer(PARK_HYDRANT_M, 8) for f in load("INFRA_Hydrants") if f.get("geometry")])
+    ex["driveway"] = unary_union([shape(f["geometry"]).buffer(PARK_DRIVEWAY_M) for f in load("BASEMAP_Driveways") if f.get("geometry")])
+    ex["bus"] = unary_union([shape(f["geometry"]).buffer(PARK_BUS_M) for f in load("TRANS_BusShelters") if f.get("geometry")])
+    rl = [shape(f["geometry"]).buffer(0) for f in load("BASEMAP_Roads") if f.get("geometry")
+          and f["properties"].get("TYPE") in ("RD-BRIDGE", "RD-ALLEY", "RD-UNPAVED")]
+    ex["bridge_alley"] = unary_union(rl).buffer(3.0) if rl else Polygon()
+    # events (CambridgeRacer/Tracks/<region>.json, UE cm -> ENU m)
+    en = lambda x, y: (x / 100.0, -y / 100.0)
+    tj = ROOT / f"CambridgeRacer/Tracks/{region}.json"
+    lines, gates, starts = [], [], []
+    tracks = json.loads(tj.read_text()) if tj.exists() else {"tracks": []}
+    for t in tracks["tracks"]:
+        pts = [en(p[0], p[1]) for p in t["line"]]
+        if t["type"] == "circuit":
+            pts.append(pts[0])
+        lines.append(LineString(pts))
+        for g in t["gates"]:
+            c = np.array(en(g["x"], g["y"]))
+            a = math.radians(-g["yaw"])                         # UE yaw (Y south) -> ENU heading
+            fwd = np.array([math.cos(a), math.sin(a)])
+            gates.append(_rect(c[0], c[1], fwd[0], fwd[1], 2 * PARK_GATE_ALONG_M, g["width"] / 100.0 + 2 * PARK_GATE_SIDE_M))
+        s0, g0 = np.array(en(t["start"]["x"], t["start"]["y"])), t["gates"][0]
+        c1 = np.array(en(g0["x"], g0["y"]))
+        d = c1 - s0
+        Ld = float(np.linalg.norm(d))
+        fwd = d / Ld if Ld > 0.1 else np.array([math.cos(math.radians(-g0["yaw"])), math.sin(math.radians(-g0["yaw"]))])
+        mid = (s0 + c1) / 2
+        starts.append(_rect(mid[0], mid[1], fwd[0], fwd[1], Ld + 2 * PARK_START_M, g0["width"] / 100.0 + 2 * PARK_GATE_SIDE_M))
+    fr = tracks.get("free_roam")
+    spawns = [Point(en(fr["x"], fr["y"]))] if fr else []
+    mf = ROOT / f"data/processed/{region}/meshes/manifest.json"
+    if mf.exists():
+        sp = json.loads(mf.read_text())["spawn"]["ue_cm"]
+        spawns.append(Point(en(sp[0], sp[1])))
+    ex["line"] = unary_union([l.buffer(PARK_LINE_CLEAR_M, 4) for l in lines]) if lines else Polygon()
+    ex["gate"] = unary_union(gates) if gates else Polygon()
+    ex["start"] = unary_union(starts) if starts else Polygon()
+    ex["spawn"] = unary_union([p.buffer(PARK_SPAWN_M) for p in spawns]) if spawns else Polygon()
+    return ex, {"lines": lines, "gates": gates, "starts": starts, "spawns": spawns}
+
+
+def street_width(cw, ls, at=0.5):
+    """Kerb-to-kerb width (m) across a centreline at fraction `at` (None if the ray leaves no carriageway)."""
+    from shapely.geometry import LineString
+    if ls.length < 1.0:
+        return None
+    p = ls.interpolate(at, normalized=True)
+    q = ls.interpolate(min(ls.length, ls.project(p) + 1.0))
+    r = ls.interpolate(max(0.0, ls.project(p) - 1.0))
+    t = np.array([q.x - r.x, q.y - r.y])
+    t /= np.linalg.norm(t) + 1e-9
+    nrm = np.array([-t[1], t[0]])
+    tot = 0.0
+    for sg in (1, -1):
+        ray = LineString([(p.x, p.y), (p.x + sg * nrm[0] * 30, p.y + sg * nrm[1] * 30)])
+        seg = ray.intersection(cw)
+        if seg.is_empty:
+            return None
+        parts = [g for g in getattr(seg, "geoms", [seg]) if g.distance(p) < 0.2]
+        if not parts:
+            return None
+        tot += parts[0].length
+    return tot
+
+
+def place_parked(load, region, inside, bldg, stats, furniture=()):
+    """-> props of type parked_<body> (see the block comment above). furniture: (x, y) m of the props placed so far
+    (poles, lamps, trees, hydrants...): no car stands on one."""
+    from shapely.geometry import LineString
+    from shapely.strtree import STRtree
+    from scipy.spatial import cKDTree
+    if not PARKED_JSON.exists():
+        stats["skipped"] = "no parked_cars.json (run tools/blender/parked_cars.py)"
+        return []
+    fleet = json.loads(PARKED_JSON.read_text())["types"]
+    names = sorted(fleet)
+    wts = np.array([fleet[n]["weight"] for n in names], float)
+    wts /= wts.sum()
+    dims = {n: (fleet[n]["length_m"], fleet[n]["width_m"], 2 * max(abs(fleet[n]["bounds_m"][0][1]), fleet[n]["bounds_m"][1][1]))
+            for n in names}
+
+    def pick(key, max_len=99.0):
+        ok = [i for i, n in enumerate(names) if dims[n][0] <= max_len] or [min(range(len(names)), key=lambda i: dims[names[i]][0])]
+        w = wts[ok] / wts[ok].sum()
+        r = rnd(key, "type")
+        return names[ok[min(int(np.searchsorted(np.cumsum(w), r)), len(ok) - 1)]]
+
+    feats = [f for f in load("BASEMAP_Roads") if f.get("geometry")]
+    roads = unary_union([shape(f["geometry"]).buffer(0) for f in feats if f["properties"].get("TYPE") != "RD-TRAF-ISLAND"])
+    islands = unary_union([shape(f["geometry"]).buffer(0) for f in feats if f["properties"].get("TYPE") == "RD-TRAF-ISLAND"] or [Polygon()])
+    cw = roads.difference(islands)
+    cw_in = prep(cw.buffer(-0.08))
+    ex, ev = parking_exclusions(load, region, cw)
+    hard = prep(unary_union([ex[k] for k in ("line", "gate", "start", "spawn")]))
+    street_ex = prep(unary_union([g for k, g in ex.items() if k not in ("line", "gate", "start", "spawn")]))
+    in_bldg = prep(bldg.buffer(-0.1)) if bldg is not None else None
+    placed, out = [], []          # footprints (body width) for the car-car overlap test
+    grid = {}
+    for x, y in furniture:                      # (a pole / trunk: 0.3 m)
+        grid.setdefault((int(x // 20), int(y // 20)), []).append(Point(x, y).buffer(0.3, 6))
+
+    def free(poly):
+        c = poly.centroid
+        k = (int(c.x // 20), int(c.y // 20))
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for q in grid.get((k[0] + dx, k[1] + dy), ()):
+                    if q.intersects(poly):
+                        return False
+        return True
+
+    def add(kind, name, cx, cy, hx, hy, z, src):
+        L, W, Wm = dims[name]
+        body = _rect(cx, cy, hx, hy, L + 0.1, W)
+        wide = _rect(cx, cy, hx, hy, L, Wm)
+        if hard.intersects(wide):
+            stats[f"{src}_drop_event"] = stats.get(f"{src}_drop_event", 0) + 1
+            return False
+        if in_bldg is not None and in_bldg.intersects(body):
+            stats[f"{src}_drop_building"] = stats.get(f"{src}_drop_building", 0) + 1
+            return False
+        if not free(body):
+            stats[f"{src}_drop_overlap"] = stats.get(f"{src}_drop_overlap", 0) + 1
+            return False
+        c = body.centroid
+        grid.setdefault((int(c.x // 20), int(c.y // 20)), []).append(body)
+        out.append({"type": f"parked_{name}", "x": round(cx * 100, 1), "y": round(-cy * 100, 1), "z": z,
+                    "yaw": round(math.degrees(math.atan2(-hy, hx)), 2), "scale": 1.0, "src": src})
+        stats[f"{src}_placed"] = stats.get(f"{src}_placed", 0) + 1
+        return True
+
+    # traffic direction of the nearest centreline (for which way a kerbside car faces)
+    cl = [(shape(f["geometry"]), f["properties"]) for f in load("TRANS_Centerlines") if f.get("geometry")]
+    cl = [(g if g.geom_type == "LineString" else max(g.geoms, key=lambda q: q.length), p) for g, p in cl]
+    cl_tree = STRtree([g for g, _ in cl])
+
+    def nearest_cl(pt, maxd=14.0):
+        i = cl_tree.nearest(pt)
+        if i is None:
+            return None
+        g, p = cl[int(i)]
+        return (g, p) if g.distance(pt) <= maxd else None
+
+    def heading(pt, t):
+        """Unit heading for a kerbside car at pt with kerb tangent t: kerb on its right (two-way), with the flow
+        on one-way streets (Direction 1 = digitised direction, -1 = against)."""
+        t = np.asarray(t, float)
+        nc = nearest_cl(pt)
+        if nc is not None:
+            g, p = nc
+            s = g.project(pt)
+            a, b = g.interpolate(max(0.0, s - 1.0)), g.interpolate(min(g.length, s + 1.0))
+            d = np.array([b.x - a.x, b.y - a.y])
+            d /= np.linalg.norm(d) + 1e-9
+            if str(p.get("Direction")) in ("1", "-1"):
+                f = d * (1.0 if str(p.get("Direction")) == "1" else -1.0)
+                return t if np.dot(t, f) >= 0 else -t
+            # two-way: kerb on the right -> the car's right (hy, -hx) points from the centreline toward the car
+            q = g.interpolate(s)
+            off = np.array([pt.x - q.x, pt.y - q.y])
+            right = np.array([t[1], -t[0]])
+            return t if np.dot(right, off) > 0 else -t
+        return t
+
+    # 1. metered spaces: one car per space (centred, along the space's long axis)
+    edge = cw.boundary
+    for f in load("TRAFFIC_MeteredParkingSpaces"):
+        p = f["properties"]
+        if not f.get("geometry") or p.get("Status") in ("Permanently Removed", "Proposed"):
+            continue
+        g = shape(f["geometry"]).buffer(0)
+        if g.is_empty or not inside.contains(g.centroid):
+            continue
+        key = p.get("GlobalID") or f"{g.centroid.x:.1f},{g.centroid.y:.1f}"
+        if rnd(key, "occ") > OCC_METER:
+            stats["meter_empty"] = stats.get("meter_empty", 0) + 1
+            continue
+        rr = list(g.minimum_rotated_rectangle.exterior.coords)[:4]
+        e0, e1 = np.subtract(rr[1], rr[0]), np.subtract(rr[2], rr[1])
+        long_e = e0 if np.linalg.norm(e0) >= np.linalg.norm(e1) else e1
+        Ls = float(np.linalg.norm(long_e))
+        if Ls < 4.6:
+            stats["meter_too_short"] = stats.get("meter_too_short", 0) + 1
+            continue
+        t = long_e / Ls
+        c = g.centroid
+        name = pick(key, Ls - 0.25)
+        L, W, _ = dims[name]
+        # kerb side: shift so the kerb-side flank sits PARK_KERB_GAP off the kerb (space centre if no kerb within 3 m)
+        q = nearest_points(edge, c)[0]
+        dk = c.distance(q)
+        cx, cy = c.x, c.y
+        if dk < 3.0:
+            nvec = np.array([c.x - q.x, c.y - q.y]) / (dk + 1e-9)
+            nvec = np.array([-t[1], t[0]]) * np.sign(np.dot(np.array([-t[1], t[0]]), nvec) or 1.0)
+            cx, cy = q.x + nvec[0] * (PARK_KERB_GAP + W / 2), q.y + nvec[1] * (PARK_KERB_GAP + W / 2)
+            # keep the along-kerb position of the space centre
+            along = np.dot([c.x - cx, c.y - cy], t)
+            cx, cy = cx + t[0] * along, cy + t[1] * along
+        jit = (rnd(key, "jit") - 0.5) * max(0.0, Ls - L - 0.3)
+        cx, cy = cx + t[0] * jit, cy + t[1] * jit
+        h = heading(Point(cx, cy), t)
+        if not cw_in.contains(_rect(cx, cy, h[0], h[1], L - 0.1, W - 0.1)):
+            stats["meter_off_carriageway"] = stats.get("meter_off_carriageway", 0) + 1
+            continue
+        add("meter", name, cx, cy, h[0], h[1], 0.0, "meter")
+    # 2. kerbside walk: marked spaces + local streets + minor arterials
+    meter_zone = prep(unary_union([shape(f["geometry"]).buffer(8.0) for f in load("TRAFFIC_MeteredParkingSpaces")
+                                   if f.get("geometry") and f["properties"].get("Status") not in ("Permanently Removed", "Proposed")]))
+    marks = unary_union([shape(f["geometry"]).buffer(6.0) for f in load("TRAFFIC_PavementMarkings")
+                         if f.get("geometry") and f["properties"].get("TYPE") == "PM-PARKING"])
+    marked = prep(marks.intersection(roads))
+    rings = []
+    for poly in getattr(cw, "geoms", [cw]):
+        rings += [poly.exterior] + list(poly.interiors)
+    seg_width = {}
+    for ring in rings:
+        ring = LineString(ring.coords)
+        Lr = ring.length
+        if Lr < 12.0:
+            continue
+        s0 = 0.0
+        while s0 < Lr - 5.0:
+            key = f"{ring.coords[0][0]:.1f},{ring.coords[0][1]:.1f}:{s0:.1f}"
+            name = pick(key)
+            L, W, _ = dims[name]
+            sc = s0 + L / 2
+            a, b = ring.interpolate(sc - 2.5), ring.interpolate(sc + 2.5)
+            t = np.array([b.x - a.x, b.y - a.y])
+            nt = np.linalg.norm(t)
+            if nt < 4.0:                         # bends: no kerb straight enough here
+                s0 += 0.5
+                continue
+            t /= nt
+            a2, b2 = ring.interpolate(sc - 4.0), ring.interpolate(sc + 4.0)
+            m0 = ring.interpolate(sc)
+            dev = LineString([(a2.x, a2.y), (b2.x, b2.y)]).distance(m0)
+            if dev > 0.25:
+                s0 += 0.5
+                continue
+            nrm = np.array([-t[1], t[0]])
+            if not cw.contains(Point(m0.x + nrm[0] * 1.2, m0.y + nrm[1] * 1.2)):
+                nrm = -nrm
+            off = PARK_KERB_GAP + W / 2
+            cx, cy = m0.x + nrm[0] * off, m0.y + nrm[1] * off
+            c = Point(cx, cy)
+            if not inside.contains(c) or meter_zone.contains(c):
+                s0 += 1.0
+                continue
+            # permission
+            src = None
+            if marked.contains(c):
+                src, occ = "marked", OCC_MARKED
+            else:
+                nc = nearest_cl(c)
+                if nc is not None:
+                    g, p = nc
+                    st = p.get("Street") or ""
+                    gid = p.get("ID") or st
+                    if gid not in seg_width:
+                        seg_width[gid] = street_width(cw, g) or 0.0
+                    w = seg_width[gid]
+                    restricted = p.get("Restriction") == "T" or st.endswith((" Aly", " Pl", " Way", " Ter", " Ct")) or st in NO_PARK_STREETS
+                    gx, gy = g.coords[-1][0] - g.coords[0][0], g.coords[-1][1] - g.coords[0][1]
+                    side = 1 if gx * (cy - g.coords[0][1]) - gy * (cx - g.coords[0][0]) > 0 else -1
+                    if restricted:
+                        pass
+                    elif p.get("MajorRoad") is None and (w >= 9.0 or (w >= 7.0 and side == (1 if rnd(gid, "side") < 0.5 else -1))):
+                        src, occ = "resid", OCC_RESID * (0.75 + 0.5 * rnd(gid, "block"))
+                    elif p.get("MajorRoad") == 2 and w >= 11.5:
+                        src, occ = "arterial", OCC_RESID * (0.7 + 0.5 * rnd(gid, "block"))
+            if src is None:
+                s0 += 1.0
+                continue
+            fp = _rect(cx, cy, t[0], t[1], L + 0.6, W)
+            if not cw_in.contains(_rect(cx, cy, t[0], t[1], L - 0.1, W - 0.05)) or street_ex.intersects(fp):
+                s0 += 0.5
+                continue
+            gap = 0.6 + 1.4 * rnd(key, "gap")
+            if rnd(key, "occ") < occ:
+                h = heading(c, t)
+                add(src, name, cx, cy, h[0], h[1], 0.0, src)
+            else:
+                stats[f"{src}_empty"] = stats.get(f"{src}_empty", 0) + 1
+            s0 += L + gap
+    # 3. surface lots: between adjacent parallel stall lines
+    lots = unary_union([shape(f["geometry"]).buffer(0) for f in load("BASEMAP_ParkingLots") if f.get("geometry")])
+    lots_prep = prep(lots.buffer(0.6))
+    lot_list = list(getattr(lots, "geoms", [lots]))
+    lot_tree = STRtree(lot_list)
+    segs = []
+    for f in load("TRAFFIC_PavementMarkings"):
+        if not f.get("geometry") or f["properties"].get("TYPE") != "PM-PARKING-OS":
+            continue
+        g = shape(f["geometry"])
+        for ls in getattr(g, "geoms", [g]):
+            c = list(ls.coords)
+            for a, b in zip(c[:-1], c[1:]):
+                d = np.subtract(b, a)
+                ln = float(np.linalg.norm(d))
+                if 3.6 <= ln <= 6.6:
+                    segs.append((np.array(a), np.array(b)))
+                elif 8.8 <= ln <= 13.0:          # one line for two stalls back to back
+                    m = (np.array(a) + np.array(b)) / 2
+                    segs += [(np.array(a), m), (m, np.array(b))]
+    if segs:
+        mids = np.array([(a + b) / 2 for a, b in segs])
+        dirs = np.array([(b - a) / np.linalg.norm(b - a) for a, b in segs])
+        kd = cKDTree(mids)
+        used = set()
+        for i in range(len(segs)):
+            m, d = mids[i], dirs[i]
+            perp = np.array([-d[1], d[0]])
+            best = None
+            for j in kd.query_ball_point(m, 3.6):
+                if j == i or abs(d[0] * dirs[j][1] - d[1] * dirs[j][0]) > 0.17:
+                    continue
+                v = mids[j] - m
+                off, along = float(np.dot(v, perp)), float(np.dot(v, d))
+                if 2.2 <= off <= 3.4 and abs(along) < 1.2 and (best is None or off < best[0]):
+                    best = (off, j)
+            if best is None:
+                continue
+            j = best[1]
+            c = (m + mids[j]) / 2
+            key = f"lot:{c[0]:.1f},{c[1]:.1f}"
+            if key in used:
+                continue
+            used.add(key)
+            pt = Point(c)
+            if not inside.contains(pt) or not lots_prep.contains(pt):
+                continue
+            li = lot_tree.nearest(pt)
+            lk = f"{lot_list[int(li)].centroid.x:.0f},{lot_list[int(li)].centroid.y:.0f}" if li is not None else key
+            occ = OCC_LOT[0] + (OCC_LOT[1] - OCC_LOT[0]) * rnd(lk, "lotocc")
+            if rnd(key, "occ") > occ:
+                stats["lot_empty"] = stats.get("lot_empty", 0) + 1
+                continue
+            ln = float(np.linalg.norm(segs[i][1] - segs[i][0]))
+            name = pick(key, ln + 0.7)
+            h = d if rnd(key, "nose") < 0.5 else -d
+            sh = (rnd(key, "jit") - 0.5) * 0.3
+            add("lot", name, c[0] + h[0] * sh, c[1] + h[1] * sh, h[0], h[1], 0.0 if roads.contains(pt) else CURB_H * 100, "lot")
+    stats["total"] = len(out)
+    return out
+
+
 def main(region):
     frame = Frame()
     rdir = ROOT / "data/processed" / region
@@ -510,12 +927,15 @@ def main(region):
 
     furniture_stats = {}
     furniture_stats["streetlight_moved_to_curb"] = lamps_moved
-    props += place_furniture(load, roads, inside, building_footprints(models, load), furniture_stats, snap)
-    # validation: nothing may stand on the carriageway (expected 0)
+    bfoot = building_footprints(models, load)
+    props += place_furniture(load, roads, inside, bfoot, furniture_stats, snap)
+    parked_stats = {}
+    props += place_parked(load, region, inside, bfoot, parked_stats, [(p["x"] / 100.0, -p["y"] / 100.0) for p in props])
+    # validation: nothing may stand on the carriageway (expected 0; parked cars do, by design)
     from shapely.geometry import Point as P
     on_cw = {}
     for pr in props:
-        if carriageway.contains(P(pr["x"] / 100.0, -pr["y"] / 100.0)):
+        if not pr["type"].startswith("parked_") and carriageway.contains(P(pr["x"] / 100.0, -pr["y"] / 100.0)):
             on_cw[pr["type"]] = on_cw.get(pr["type"], 0) + 1
 
     out = rdir / "props"
@@ -526,7 +946,8 @@ def main(region):
     counts = {}
     for pr in props:
         counts[pr["type"]] = counts.get(pr["type"], 0) + 1
-    print(json.dumps({"counts": counts, "props_on_carriageway": on_cw, "furniture_dropped": furniture_stats, "skipped_trees": skipped, "thinned_trees": thinned,
+    print(json.dumps({"counts": counts, "props_on_carriageway": on_cw, "furniture_dropped": furniture_stats,
+                      "parked": dict(sorted(parked_stats.items())), "skipped_trees": skipped, "thinned_trees": thinned,
                       "trees": sum(st["n"] for st in tree_stats.values()),
                       "tree_variants": dict(sorted(tree_stats.items())),
                       "genus_not_in_map_live_trees": resolved}, indent=2))

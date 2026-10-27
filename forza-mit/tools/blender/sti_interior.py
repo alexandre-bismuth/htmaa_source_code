@@ -38,20 +38,74 @@ def liner(src_bm):
     return b
 
 
+def _bump(a, inner, peak, outer):
+    """0 inside `inner`, rising to 1 at `peak`, back to 0.3 at `outer` (bolster cross-section)."""
+    if a <= inner:
+        return 0.0
+    if a <= peak:
+        t = (a - inner) / (peak - inner)
+        return t * t * (3 - 2 * t)
+    t = min(1.0, (a - peak) / max(outer - peak, 1e-6))
+    return 1.0 - 0.7 * t * t
+
+
+def _loft_closed(rows):
+    """Loft of closed section loops (list of lists of Vector) with both ends capped -> bmesh."""
+    bm = grid_surface(rows, closed_v=True)
+    for r in (rows[0], rows[-1]):
+        bm.faces.new([bm.verts.new(p) for p in r])
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
 def seat(width=0.50, front=True):
-    """Bucket seat at the origin (seat H-point region), facing +x."""
+    """Sport bucket seat at the origin (seat H-point region), facing +x: lofted cushion and backrest with real side
+    bolsters (thigh and torso), the backrest's bolsters fading out over the shoulders, a separate headrest on
+    posts (front seats) / two headrests (rear bench). Same envelope as the old box seat (the driver fits)."""
+    W = width / 2
+    ny = 13
+    ys = [-W + 2 * W * j / (ny - 1) for j in range(ny)]
     bm = bmesh.new()
-    # cushion with side bolsters
-    cush = rounded_box((0.50, width * 0.62, 0.10), (0.06, 0, 0.0), 1, 0.3)
-    merge(bm, cush)
-    for s in (-1, 1):
-        merge(bm, rounded_box((0.48, 0.10, 0.15), (0.06, s * width * 0.40, 0.03), 1, 0.4))
-    # backrest (reclined ~20 deg) with bolsters and a headrest
-    back = bmesh.new()
-    merge(back, rounded_box((0.11, width * 0.62, 0.62), (0, 0, 0.31), 1, 0.3))
-    for s in (-1, 1):
-        merge(back, rounded_box((0.16, 0.11, 0.58), (0.02, s * width * 0.40, 0.29), 1, 0.4))
-    merge(back, rounded_box((0.10, 0.26, 0.17), (0.0, 0, 0.72), 1, 0.4) if front else rounded_box((0.01, 0.01, 0.01)))
+    # cushion: stations along x (rear -> front), section across y: top surface with bolsters, flat bottom
+    rows = []
+    nx = 9
+    for i in range(nx):
+        u = i / (nx - 1)
+        x = -0.19 + 0.49 * u
+        end = math.sin(math.pi * min(u, 1 - u) / 0.24 * 0.5) if min(u, 1 - u) < 0.12 else 1.0  # round the ends
+        thigh = 0.018 * max(0.0, (u - 0.55) / 0.45) ** 1.5
+        row = []
+        for y in ys:
+            z = 0.035 + thigh + 0.075 * _bump(abs(y), 0.56 * W, 0.84 * W, W) * (1 if front else 0.45)
+            row.append(Vector((x, y * (0.85 + 0.15 * end), -0.05 + (z + 0.05) * end)))
+        row += [Vector((x, W * (0.85 + 0.15 * end), -0.05)), Vector((x, -W * (0.85 + 0.15 * end), -0.05))]
+        rows.append(row)
+    merge(bm, subsurf_bm(_loft_closed(rows), 2))
+    # backrest: stations up the back (local z), section across y in depth x: bolsters wrap forward
+    back_rows = []
+    nz = 10
+    for i in range(nz):
+        u = i / (nz - 1)
+        z = 0.02 + 0.60 * u
+        end = 1.0 if 0.06 < u < 0.94 else math.sin(0.5 * math.pi * min(u, 1 - u) / 0.06)
+        Wz = W * (1 - 0.14 * u)
+        bol = (1 - 0.75 * max(0.0, (u - 0.62) / 0.38)) * (1 if front else 0.4)
+        row = []
+        for y in ys:
+            yy = y * (1 - 0.14 * u)
+            xf = 0.050 + 0.085 * bol * _bump(abs(yy), 0.56 * Wz, 0.86 * Wz, Wz)
+            row.append(Vector((-0.055 + (xf + 0.055) * max(end, 0.15), yy, z)))
+        row += [Vector((-0.055, Wz, z)), Vector((-0.055, -Wz, z))]
+        back_rows.append(row)
+    back = subsurf_bm(_loft_closed(back_rows), 2)
+    if front:
+        merge(back, rounded_box((0.10, 0.25, 0.16), (0.005, 0, 0.73), 1, 0.4))
+        for yp in (-0.07, 0.07):                     # headrest posts
+            merge(back, rounded_box((0.010, 0.010, 0.09), (0.0, yp, 0.645), 1, 0.4))
+    else:
+        for yh in (-0.24, 0.24):
+            merge(back, rounded_box((0.08, 0.20, 0.13), (0.0, yh, 0.70), 1, 0.4))
     transformed(back, Matrix.Translation((-0.20, 0, 0.02)) @ Matrix.Rotation(math.radians(-18), 4, "Y"))
     merge(bm, back)
     return bm
@@ -59,14 +113,13 @@ def seat(width=0.50, front=True):
 
 def steering_wheel():
     bm = bmesh.new()
-    R, r = 0.185, 0.016
-    ring = bmesh.new()
-    res = bmesh.ops.create_circle(ring, segments=48, radius=R)
-    # torus via lathe of a small circle around Y, then rotate so the wheel plane faces the driver
-    tor = lathe([(R + r * math.cos(a), r * math.sin(a)) for a in [2 * math.pi * k / 12 for k in range(13)]], 48)
-    ring.free()
+    R, r = 0.182, 0.0185
+    # rim: torus (slightly oval grip section) via lathe about Y; the wheel plane faces the driver after the transform
+    tor = lathe([(R + 1.15 * r * math.cos(a), r * math.sin(a)) for a in [2 * math.pi * k / 14 for k in range(15)]], 64)
     merge(bm, tor)
-    merge(bm, lathe([(0.0001, 0.02), (0.06, 0.018), (0.065, 0.0), (0.0001, -0.01)], 32))
+    # airbag hub: a padded boss
+    merge(bm, lathe([(0.0001, 0.034), (0.045, 0.032), (0.068, 0.024), (0.076, 0.010), (0.074, -0.004),
+                     (0.0001, -0.012)], 40))
     for a in (0, 180, 270):
         aa = math.radians(a)
         sp = rounded_box((0.13, 0.016, 0.045), (0, 0, 0), 1, 0.4)
@@ -89,6 +142,31 @@ def dashboard():
     return subsurf_bm(grid_surface(rows), 1)
 
 
+def binnacle(parts):
+    """Instrument binnacle in front of the (RHD) driver: a hood lip over the gauge face, two dials with chrome
+    bezels (they catch the light through the windshield)."""
+    rows = []
+    for k in range(13):
+        y = DRIVER_Y - 0.15 + 0.30 * k / 12
+        hump = 0.055 * math.exp(-((y - DRIVER_Y) / 0.16) ** 2)
+        rows.append([Vector((0.60, y, 0.993 + hump + G)), Vector((0.556, y, 0.998 + hump + G)),
+                     Vector((0.548, y, 0.986 + hump + G)), Vector((0.556, y, 0.982 + hump + G))])
+    lip = grid_surface(rows)
+    lip.normal_update()
+    if sum(f.normal.z for f in lip.faces) < 0:
+        bmesh.ops.reverse_faces(lip, faces=lip.faces)
+    parts.add("interior", lip, smooth=50)
+    n = Vector((-0.92, 0.0, 0.40)).normalized()
+    from sti_details import frame
+    for dy in (-0.066, 0.066):
+        c = Vector((0.551, DRIVER_Y + dy, 0.982 + G))
+        M = Matrix.Translation(c) @ frame(n)
+        parts.add("interior", transformed(lathe([(0.0001, -0.004), (0.040, -0.004), (0.040, -0.012)], 32), M),
+                  smooth=30)
+        parts.add("chrome", transformed(lathe([(0.044, -0.006), (0.044, 0.001), (0.0395, 0.002), (0.0395, -0.004)], 32),
+                                        M), smooth=30)
+
+
 def build(parts, src_bm):
     parts.add("interior", liner(src_bm), smooth=50)
     # floor + firewall + parcel shelf + rear bulkhead
@@ -99,10 +177,12 @@ def build(parts, src_bm):
     shelf = bmesh.new()
     pts = [(-1.30, -0.70, 1.00), (-1.30, 0.70, 1.00), (-1.62, 0.66, 1.045), (-1.62, -0.66, 1.045)]
     f = shelf.faces.new([shelf.verts.new((x, y, h + G)) for x, y, h in pts])
+    f.normal_update()             # (a new face's normal is not computed yet)
     if f.normal.z < 0:
         f.normal_flip()
     parts.add("interior", shelf)
     parts.add("interior", dashboard(), smooth=50)
+    binnacle(parts)
     # gauges: two dark rings in the binnacle face are implied; steering wheel (RHD)
     sw = steering_wheel()
     M = Matrix.Translation((0.40, DRIVER_Y, 0.90 + G)) @ Matrix.Rotation(math.radians(24), 4, "Y") \
@@ -112,7 +192,7 @@ def build(parts, src_bm):
         # driver's bucket (RHD, y < 0) sits 4 cm lower and 5 cm further forward than the passenger seat
         x0, h0 = (0.07, 0.43) if y < 0 else (0.02, 0.47)
         parts.add("interior", transformed(seat(), Matrix.Translation((x0, y, h0 + G))), smooth=50)
-    rear = seat(1.30, front=False)
+    rear = seat(0.92, front=False)      # between the rear wheel wells (inner walls at |y| = 0.43)
     parts.add("interior", transformed(rear, Matrix.Translation((-0.82, 0.0, 0.47 + G))
                                       @ Matrix.Rotation(math.radians(-6), 4, "Y")), smooth=50)
     # centre console with the shifter and handbrake

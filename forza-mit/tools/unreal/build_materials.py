@@ -36,16 +36,23 @@ def texture_sources():
     out = []
     for surface, t in TEXSETS.items():
         d = ROOT / t["dir"]
+        # brick sets: the ARM with a per-brick id in B (tools/mapgen/fetch_textures.py make_brick_ids)
+        # (BC7 "linear": TC_MASKS is BC1 here, whose 5-bit blue made the per-brick tints blotchy)
+        has_id = bool(t.get("arm_id")) and (ROOT / t["arm_id"]).exists()
+        arm = ROOT / t["arm_id"] if has_id else d / "arm.jpg"
         out += [(TEX, f"T_{surface}_D", d / "diff.jpg", "color"),
                 (TEX, f"T_{surface}_N", d / "nor.jpg", "normal"),
-                (TEX, f"T_{surface}_ARM", d / "arm.jpg", "mask")]
+                (TEX, f"T_{surface}_ARM", arm, "linear" if has_id else "mask")]
     rd = ROOT / f"data/processed/{REGION}/ortho"
     if ORTHO_CTX:
         out.append((RTEX, "T_OrthoCtx", rd / "ortho_ctx.jpg", "ortho"))
-    out += [(RTEX, "T_Ortho", rd / "ortho.jpg", "ortho"),
-            (RTEX, "T_Markings", rd / "markings.png", "rg"),
-            (RTEX, "T_GroundMask", rd / "ground_mask.png", "linear"),
-            (TEX, "T_WaterN", ROOT / "data/processed/common/water_normal.png", "normal")]
+    out.append((RTEX, "T_Ortho", rd / "ortho.jpg", "ortho"))
+    # ground & water round v2 (tools/mapgen/make_ground_mask.py, make_water_normal.py): exact edge distances
+    # (uncompressed: sub-texel curb lines), GIS paving-type distance fields, per-polygon directions (point-sampled)
+    out += [(RTEX, "T_EdgeMask", rd / "edge_mask.png", "raw"),
+            (RTEX, "T_SurfaceMask", rd / "surface_mask.png", "raw"),
+            (RTEX, "T_SurfaceAngle", rd / "surface_angle.png", "point"),
+            (TEX, "T_WaterWaves", ROOT / "data/processed/common/water_waves.png", "normal")]
     return out
 
 
@@ -82,14 +89,22 @@ def configure_textures():
             t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_MASKS)
             t.set_editor_property("srgb", False)
         elif kind == "linear":
-            # three-channel distance-field mask: BC7, linear (same 1 B/px as BC5)
+            # BC7, linear (brick ARM sets with a per-brick id in B, see texture_sources)
             t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_BC7)
             t.set_editor_property("srgb", False)
-        elif kind == "rg":
-            # two-channel paint mask: BC5 keeps R and G at full quality (it is not a normal map;
-            # we only read .rg in the shader)
-            t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
+        elif kind == "raw":
+            # exact distance fields: uncompressed RGBA8 (BC7 block error would wobble the curb / lawn edges). Never
+            # streamed: the streamer can't see world-position sampling and keeps low mips, which erase thin strips
+            t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_VECTOR_DISPLACEMENTMAP)
             t.set_editor_property("srgb", False)
+            t.set_editor_property("never_stream", True)
+        elif kind == "point":
+            # per-polygon codes read with Load(): lossless single channel, no mips, never streamed out
+            t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_GRAYSCALE)
+            t.set_editor_property("srgb", False)
+            t.set_editor_property("mip_gen_settings", unreal.TextureMipGenSettings.TMGS_NO_MIPMAPS)
+            t.set_editor_property("filter", unreal.TextureFilter.TF_NEAREST)
+            t.set_editor_property("never_stream", True)
         else:
             t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_DEFAULT)
             t.set_editor_property("srgb", True)
@@ -156,6 +171,23 @@ def world_pos(m, y):
     return ("WP", MEL.create_material_expression(m, unreal.MaterialExpressionWorldPosition, -900, y), "XYZ")
 
 
+def const(m, v, y):
+    e = MEL.create_material_expression(m, unreal.MaterialExpressionConstant, -1100, y)
+    e.set_editor_property("r", v)
+    return e
+
+
+def static_flag(m, pin, name, y):
+    """Custom-node input from a static switch parameter (constant 0 / 1 per instance: the compiler drops the other
+    branches, so each ground class compiles only its own code)."""
+    s = MEL.create_material_expression(m, unreal.MaterialExpressionStaticSwitchParameter, -900, y)
+    s.set_editor_property("parameter_name", name)
+    s.set_editor_property("default_value", False)
+    assert MEL.connect_material_expressions(const(m, 1.0, y), "", s, "True")
+    assert MEL.connect_material_expressions(const(m, 0.0, y + 20), "", s, "False")
+    return (pin, s, "")
+
+
 F1, F3 = unreal.CustomMaterialOutputType.CMOT_FLOAT1, unreal.CustomMaterialOutputType.CMOT_FLOAT3
 MP = unreal.MaterialProperty
 
@@ -179,20 +211,32 @@ def build_masters(tex):
     m = new_material("M_Ground")
     vn = MEL.create_material_expression(m, unreal.MaterialExpressionVertexNormalWS, -900, 100)
     ins = [world_pos(m, 0), ("VN", vn, ""), tex_param(m, "D", d, 200), tex_param(m, "N", n, 400), tex_param(m, "ARM", a, 600),
-           tex_param(m, "Ortho", tex["T_Ortho"], 800), tex_param(m, "Marks", tex["T_Markings"], 1000),
+           tex_param(m, "Ortho", tex["T_Ortho"], 800),
            vec_param(m, "P1", [3, 0.3, 0, 0], 1200), vec_param(m, "P2", [1, 1, 0.15, 0], 1400),
            vec_param(m, "OX", ortho_xform(), 1600), vec_param(m, "Tint", [1, 1, 1], 1800, "RGB"),
-           vec_param(m, "P3", [0, 0, 0, 0], 2000), tex_param(m, "Mask", tex["T_GroundMask"], 2200),
            tex_param(m, "D2", tex["T_sidewalk_brick_D"], 2400), tex_param(m, "N2", tex["T_sidewalk_brick_N"], 2500),
-           tex_param(m, "ARM2", tex["T_sidewalk_brick_ARM"], 2600), vec_param(m, "P4", [2, 0, 60, 0], 2700)]
-    c = custom_node(m, "ground.hlsl", ins, [("Nrm", F3), ("Rough", F1), ("AO", F1)])
-    wire(m, c, [("return", MP.MP_BASE_COLOR), ("Nrm", MP.MP_NORMAL), ("Rough", MP.MP_ROUGHNESS), ("AO", MP.MP_AMBIENT_OCCLUSION)])
+           tex_param(m, "ARM2", tex["T_sidewalk_brick_ARM"], 2600), vec_param(m, "P4", [2, 0, 60, 0], 2700),
+           # round v2 (ground.hlsl header): class switches, camera vector, asphalt_04 set, GIS masks, new parameters
+           static_flag(m, "LEG", "Legacy", 2860), static_flag(m, "MRD", "Road", 2920),
+           static_flag(m, "MGR", "Grass", 2980), static_flag(m, "MCB", "Curb", 3040),
+           ("CV", MEL.create_material_expression(m, unreal.MaterialExpressionCameraVectorWS, -900, 3100), ""),
+           tex_param(m, "D3", tex["T_parking_D"], 3150), tex_param(m, "N3", tex["T_parking_N"], 3200),
+           tex_param(m, "ARM3", tex["T_parking_ARM"], 3250), tex_param(m, "SMask", tex["T_SurfaceMask"], 3300),
+           tex_param(m, "SAng", tex["T_SurfaceAngle"], 3350), tex_param(m, "EMask", tex["T_EdgeMask"], 3400),
+           vec_param(m, "Q1", [0.2, 0, 4.5, 1], 3450), vec_param(m, "Q2", [0, 0, 0, 0], 3500),
+           vec_param(m, "Q3", [0, 0, 0, 0], 3550), vec_param(m, "Q4", [0, 0, 0, 0], 3600),
+           vec_param(m, "Q5", [0.15, 0, 0, 0], 3650), vec_param(m, "C1", [1, 1, 1], 3700, "RGB"),
+           vec_param(m, "C2", [1, 1, 1], 3750, "RGB"), vec_param(m, "C3", [1, 1, 1], 3800, "RGB")]
+    c = custom_node(m, "ground.hlsl", ins, [("Nrm", F3), ("Rough", F1), ("AO", F1), ("Spec", F1)])
+    wire(m, c, [("return", MP.MP_BASE_COLOR), ("Nrm", MP.MP_NORMAL), ("Rough", MP.MP_ROUGHNESS), ("AO", MP.MP_AMBIENT_OCCLUSION),
+                ("Spec", MP.MP_SPECULAR)])
     masters["ground"] = m
 
     m = new_material("M_Paint")
-    ins = [world_pos(m, 0), vec_param(m, "Col", [0.85, 0.85, 0.82], 200, "RGB"), vec_param(m, "P", [0.5, 0.55, 0, 0], 400)]
-    c = custom_node(m, "paint.hlsl", ins, [("Rough", F1)])
-    wire(m, c, [("return", MP.MP_BASE_COLOR), ("Rough", MP.MP_ROUGHNESS)])
+    ins = [world_pos(m, 0), vec_param(m, "Col", [0.85, 0.85, 0.82], 200, "RGB"), vec_param(m, "P", [0.5, 0.55, 0, 0], 400),
+           tex_param(m, "RN", n, 600), tex_param(m, "RD", d, 700), vec_param(m, "PQ", [3, 0.6, 0.6, 0.3], 800)]
+    c = custom_node(m, "paint.hlsl", ins, [("Rough", F1), ("Nrm", F3)])
+    wire(m, c, [("return", MP.MP_BASE_COLOR), ("Rough", MP.MP_ROUGHNESS), ("Nrm", MP.MP_NORMAL)])
     masters["paint"] = m
 
     m = new_material("M_Facade", two_sided=True)
@@ -201,14 +245,21 @@ def build_masters(tex):
     uv1.set_editor_property("coordinate_index", 1)
     uv2 = MEL.create_material_expression(m, unreal.MaterialExpressionTextureCoordinate, -900, 150)
     uv2.set_editor_property("coordinate_index", 2)
+    # the sun as the sky atmosphere sees it (the level's directional light drives the atmosphere): the
+    # window recesses trace their self-shadow towards it, so it follows whatever build_level does with the sun
+    sun = MEL.create_material_expression(m, unreal.MaterialExpressionSkyAtmosphereLightDirection, -900, 750)
     ins = [("UV", uv0, ""), ("UV1", uv1, ""), ("UV2", uv2, ""), tex_param(m, "D", d, 200), tex_param(m, "N", n, 400), tex_param(m, "ARM", a, 600),
            world_pos(m, 700),
            ("CV", MEL.create_material_expression(m, unreal.MaterialExpressionCameraVectorWS, -900, 720), ""),
            ("VN", MEL.create_material_expression(m, unreal.MaterialExpressionVertexNormalWS, -900, 740), ""),
+           ("TS", MEL.create_material_expression(m, unreal.MaterialExpressionTwoSidedSign, -900, 745), ""),
+           ("SUN", sun, ""),
            vec_param(m, "P4", [0.0, 3.5, 0.0, 0.0], 760),
            vec_param(m, "P1", [1.4, 3.4, 2.6, 4.0], 800), vec_param(m, "P2", [0.55, 0.55, 0.28, 0], 1000),
            vec_param(m, "P3", [0.1, 0.06, 0.06, 0.4], 1200), vec_param(m, "WallTint", [1, 1, 1], 1400, "RGB"),
-           vec_param(m, "GlassColor", [0.05, 0.06, 0.08], 1600, "RGB"), vec_param(m, "FrameColor", [0.8, 0.8, 0.8], 1800, "RGB")]
+           vec_param(m, "GlassColor", [0.05, 0.06, 0.08], 1600, "RGB"), vec_param(m, "FrameColor", [0.8, 0.8, 0.8], 1800, "RGB"),
+           vec_param(m, "P5", [0, 1, 1, 0.15], 1900), vec_param(m, "P6", [0.7, 0.68, 0.64, 0], 2000),
+           vec_param(m, "P7", [0, 0, 0, 0], 2100)]
     c = custom_node(m, "facade.hlsl", ins, [("Nrm", F3), ("Rough", F1), ("Metal", F1), ("AO", F1), ("Emit", F3)])
     wire(m, c, [("return", MP.MP_BASE_COLOR), ("Nrm", MP.MP_NORMAL), ("Rough", MP.MP_ROUGHNESS),
                 ("Metal", MP.MP_METALLIC), ("AO", MP.MP_AMBIENT_OCCLUSION), ("Emit", MP.MP_EMISSIVE_COLOR)])
@@ -220,6 +271,7 @@ def build_masters(tex):
     ins = [world_pos(m, 0), ("VN", MEL.create_material_expression(m, unreal.MaterialExpressionVertexNormalWS, -900, 30), ""),
            ("UV1", ruv1, ""), tex_param(m, "Ortho", tex["T_Ortho"], 200),
            tex_param(m, "D", tex["T_parking_D"], 250), tex_param(m, "N", tex["T_parking_N"], 300), tex_param(m, "ARM", tex["T_parking_ARM"], 350),
+           tex_param(m, "D2", tex["T_slate_D"], 360), tex_param(m, "ARM2", tex["T_slate_ARM"], 370),
            vec_param(m, "OX", ortho_xform(), 400), vec_param(m, "P1", [1, 0.8, 3.0, 0.6], 600)]
     c = custom_node(m, "roof.hlsl", ins, [("Nrm", F3), ("Rough", F1)])
     wire(m, c, [("return", MP.MP_BASE_COLOR), ("Nrm", MP.MP_NORMAL), ("Rough", MP.MP_ROUGHNESS)])
@@ -227,9 +279,13 @@ def build_masters(tex):
 
     m = new_material("M_Water")
     t = MEL.create_material_expression(m, unreal.MaterialExpressionTime, -900, 100)
-    ins = [world_pos(m, 0), ("T", t, ""), tex_param(m, "WN", tex["T_WaterN"], 200), vec_param(m, "Col", [0.02, 0.045, 0.05], 400, "RGB")]
-    c = custom_node(m, "water.hlsl", ins, [("Nrm", F3), ("Rough", F1)])
-    wire(m, c, [("return", MP.MP_BASE_COLOR), ("Nrm", MP.MP_NORMAL), ("Rough", MP.MP_ROUGHNESS)])
+    ins = [world_pos(m, 0), ("T", t, ""), vec_param(m, "Col", [0.02, 0.045, 0.05], 400, "RGB"),
+           ("CAM", MEL.create_material_expression(m, unreal.MaterialExpressionCameraPositionWS, -900, 560), ""),
+           tex_param(m, "WW", tex["T_WaterWaves"], 600), tex_param(m, "EMask", tex["T_EdgeMask"], 700),
+           vec_param(m, "OX", ortho_xform(), 800), vec_param(m, "Deep", [0.01, 0.02, 0.025], 900, "RGB"),
+           vec_param(m, "WQ", [1, 1, 210, 60], 1000)]
+    c = custom_node(m, "water.hlsl", ins, [("Nrm", F3), ("Rough", F1), ("Spec", F1)])
+    wire(m, c, [("return", MP.MP_BASE_COLOR), ("Nrm", MP.MP_NORMAL), ("Rough", MP.MP_ROUGHNESS), ("Spec", MP.MP_SPECULAR)])
     masters["water"] = m
     return masters
 
@@ -250,10 +306,15 @@ def make_instance(name, parent, params, tex, context=False):
         # backdrop ring: the wide (0.42 m) orthophoto, no road-marking mask
         MEL.set_material_instance_texture_parameter_value(mi, "Ortho", tex["T_OrthoCtx"])
         params["OX"] = ortho_xform(ORTHO_CTX)
-        if "P1" in params and len(params["P1"]) == 4 and "tex" in params and "Tint" in params:   # ground only
-            params["P1"] = params["P1"][:3] + [0.0]
-        if "P3" in params and "Tint" in params:
-            params["P3"] = params["P3"][:3] + [0.0]     # the edge mask only covers the playable ortho
+        if "Q1" in params:
+            params["Q1"] = params["Q1"][:3] + [0.0]     # ground v2: no edge / surface masks outside the playable ortho
+        if "WQ" in params:
+            params["WQ"] = params["WQ"][:1] + [0.0] + params["WQ"][2:]
+    # ground v2 class code (static switches, ground.hlsl): road / grass / curb / legacy; none = hard surfaces
+    mode = params.get("mode")
+    for flag, value in (("Road", "road"), ("Grass", "grass"), ("Curb", "curb"), ("Legacy", "legacy")):
+        if mode is not None:
+            MEL.set_material_instance_static_switch_parameter_value(mi, flag, mode == value)
     for k, v in params.items():
         if k == "tex" or not isinstance(v, list):
             continue

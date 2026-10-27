@@ -4,8 +4,8 @@
 //   green  carry this speed / accelerate     yellow  ease off     red  brake
 // Modes (Driving Assists menu): Full, Corners Only (hidden on straights that need no lift), Off.
 // Only the next ~250 m are shown, fading in just ahead of the car and out in the distance.
-// The line is cut into mesh sections of ChunkSegments segments: an update recolours and uploads only the few
-// sections around the car (and hides the ones it left), so its cost doesn't grow with the route's length.
+// The line is cut into mesh sections of ChunkSegments segments: an update recolours only the few sections around the
+// car (and hides the ones it left), uploading those whose colours changed, so its cost doesn't grow with the route's length.
 
 #pragma once
 

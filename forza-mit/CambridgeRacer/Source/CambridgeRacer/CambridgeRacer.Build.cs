@@ -22,6 +22,10 @@ public class CambridgeRacer : ModuleRules
 			"CambridgeUI"     // the UI kit and the launch menu widget (its own module: it is the loading screen)
 		});
 
+		// read from <Project>/Tracks at runtime (events, road graph, landmarks: tools/mapgen/tracks.py, committed); staged
+		// in packaged builds
+		RuntimeDependencies.Add("$(ProjectDir)/Tracks/...", StagedFileType.UFS);
+
 		PublicIncludePaths.AddRange(new string[] {
 			"CambridgeRacer",
 			"CambridgeRacer/SportsCar",

@@ -4,9 +4,10 @@
 //                         game loses focus). Backspace / gamepad B close it too. Opened from the launch menu's
 //                         Options it doesn't pause and Back returns there; in game it has a Main menu button
 //   Up / Down             select a setting        Left / Right   change it (applied immediately)
+//                         (past the last row: the Main menu / Resume buttons; Enter / A / Right presses them)
 //   Tab / LB RB           section (Graphics, Driving Assists, Calibration, Sound, Controls)
 //   mouse                 the < > buttons
-//   wheel                 paddles select, rim turned past 50 deg changes, both paddles tapped (its start) = next
+//   wheel                 paddles select, rim turned past 50 deg changes (or presses the button), both paddles tapped (its start) = next
 //                         section, both held close;
 //                         the key hints show these while the wheel is connected
 //
@@ -21,6 +22,7 @@
 
 class FCambridgeMenuInput;
 class SWidget;
+struct FKey;
 
 UCLASS()
 class UCambridgeMenuSubsystem : public UGameInstanceSubsystem
@@ -37,6 +39,8 @@ public:
 	void GoToMainMenu();
 	/** Opens the menu (if needed) on a section: 0 graphics, 1 assists, 2 calibration, 3 sound, 4 controls. */
 	void ShowTab(int32 Tab);
+	/** Test (cr.Menu.Key <key>): a key press for the open menu, as the keyboard would send it. */
+	void PressKey(const FKey& Key);
 	bool IsMenuOpen() const { return MenuWidget.IsValid(); }
 	/** Called every frame by the input processor: FPS smoothing and keeping the overlay attached. */
 	void Tick(float DeltaTime);

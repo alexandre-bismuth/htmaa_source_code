@@ -247,8 +247,8 @@ def main():
         isl = Island(name)
         fn(isl)
         isl.composite(img)
-    # Panel gaps are real geometry now (boolean grooves) and the AO map adds the contact shading, so the
-    # colour map stays clean: no painted-on gap lines. The normal map only carries the vinyl decal edges.
+    # Panel gaps are real geometry (boolean grooves) and the AO map adds the contact shading, so the colour map
+    # stays clean: no painted-on gap lines. The normal map carries the vinyl decal edges + the panel-edge roll.
     col = np.asarray(img.convert("RGB"), np.float32)
     Image.fromarray(np.clip(col, 0, 255).astype(np.uint8)).save(OUT / "sti_livery.png", optimize=True)
     diff = np.abs(col - np.array(BLUE, np.float32)).max(-1)
@@ -256,9 +256,14 @@ def main():
     Image.fromarray((mask * 255 + 0.5).astype(np.uint8)).save(OUT / "sti_paint_mask.png", optimize=True)
     hmap = np.asarray(Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.9)),
                       np.float32) / 255.0
-    dy, dx = np.gradient(hmap)                  # d/drow, d/dcol
-    k = 1.6                                      # very subtle vinyl step
-    nx, ny, nz = -dx * k, dy * k, np.ones_like(hmap)   # OpenGL: green = +v (image up) = -row
+    # rounded panel edges: every shut line is a real groove in the mesh (sharp boolean edge); a soft height drop
+    # around the same lines rolls the last ~2-3 mm of each panel into its gap, so the edge catches a thin
+    # highlight like a folded sheet-metal edge instead of reading as a knife cut
+    gap, _dish = grooves()
+    roll = np.asarray(gap.filter(ImageFilter.GaussianBlur(2.2)), np.float32) / 255.0
+    height = hmap * 1.6 - roll * 3.2
+    dy, dx = np.gradient(height)                # d/drow, d/dcol
+    nx, ny, nz = -dx, dy, np.ones_like(hmap)    # OpenGL: green = +v (image up) = -row
     inv = 1.0 / np.sqrt(nx * nx + ny * ny + nz * nz)
     nrm = np.stack([nx * inv, ny * inv, nz * inv], -1)
     Image.fromarray(((nrm * 0.5 + 0.5) * 255 + 0.5).astype(np.uint8)).save(OUT / "sti_paint_normal.png", optimize=True)

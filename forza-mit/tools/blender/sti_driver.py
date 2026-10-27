@@ -331,7 +331,7 @@ def build(parts):
     # legs: hip -> knee -> ankle, boots on the pedals (mostly hidden under the dash)
     for side in (-1, 1):
         hip = H(P0) + Vector((0.04, side * 0.095, -0.01))
-        ankle = H(Vector((0.80, Y + side * 0.13, 0.355)))
+        ankle = H(Vector((0.80, Y + side * 0.13, 0.395)))     # boots stay above the floor pan
         knee = two_bone(hip, ankle, 0.44, 0.43, Vector((0.2, side * 0.15, 1.0)))
         leg = [hip] + bezier(hip, (hip + knee) * 0.5, knee, 5)[1:] + bezier(knee, (knee + ankle) * 0.5, ankle, 5)[1:]
         parts.add("driver_suit", tube(leg, [0.082, 0.080, 0.074, 0.066, 0.058, 0.055, 0.050, 0.044, 0.040], 14),

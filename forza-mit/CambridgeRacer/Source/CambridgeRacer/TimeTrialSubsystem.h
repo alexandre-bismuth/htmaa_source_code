@@ -5,7 +5,7 @@
 // drive into the box and press
 //   Enter / gamepad A / wheel: both paddles together (its start)   start the event
 // During an event (keyboard / gamepad):
-//   R / Y / D-pad down (tap)       back on track: just before the next checkpoint, held for a 3-2-1
+//   R / Y / D-pad down (tap)       back on track: on the line where the car left it (never further on), held for a 3-2-1
 //   R / Y / D-pad down / Enter (hold)  restart the event
 //   Backspace / D-pad up (hold)    leave the event (gamepad B is shift up while driving: Forza layout)
 //   wheel (no start button: both paddles together are its start): tap back on track, hold 1 s restart. On the results one paddle picks the button and both together press it. The key hints switch
@@ -109,8 +109,10 @@ public:
 	void PlayUISound(FName Name, float Volume = 1.0f) const;
 	/** Perf A/B (cr.TT.Markers 0|1): hide the free-roam start markers. */
 	void SetMarkersHidden(bool bHidden);
-	/** Puts the car back on the racing line just before the next gate, lined up with it (R during an event). */
-	void ResetToLastGate();
+	/** Puts the car back on the racing line (R during an event, the flip check): a little behind its own progress along
+	 *  the route, never past it; just before the next gate only when it missed that gate or is lost far off the line
+	 *  (or bToGate: the test autopilot's stuck recovery, which can't drive every corner from a standstill). */
+	void ResetToLastGate(bool bToGate = false);
 	/** Test (cr.Test.ResetSpots "x:y:yaw:roll:manual:waypoint|..."): in free roam, put the car at each spot in turn (cm, deg;
 	 *  e.g. inside a building, upside down in a park, in the river), then reset it (manual 1) or leave it to the flip check
 	 *  (manual 0), and log where it ends up; waypoint 1: then a GPS waypoint on the spot (off the streets), which must
@@ -174,9 +176,11 @@ private:
 	void EndEvent();
 	void ShowGates();
 	void TickGates();
-	void PassGate();
-	void Finish();
-	bool CrossedGate(const FTimeTrialGateDef& Gate, const FVector& From, const FVector& To) const;
+	/** CrossAt: world time the car crossed the gate line (between two ticks: splits and the finish don't depend on the frame rate). */
+	void PassGate(double CrossAt);
+	void Finish(double CrossAt);
+	/** OutFraction: where along From -> To the line was crossed (0..1). */
+	bool CrossedGate(const FTimeTrialGateDef& Gate, const FVector& From, const FVector& To, float* OutFraction = nullptr) const;
 	class AImprezaSTi* GetCar() const;
 	/** The home-built wheel is connected: the key hints show its controls. */
 	bool IsWheelActive() const;
@@ -205,6 +209,7 @@ private:
 	TArray<double> GhostSplits; // best run's split times (empty: no best yet)
 	float CarRouteS = 0.0f;
 	float CarLineDist = 0.0f;
+	float LastOnLineS = 0.0f;   // CarRouteS when the car was last near the line (back on track for a car lost off it)
 	FVector2D CarLineDir = FVector2D(1.0, 0.0);
 	float WrongWayTimer = 0.0f;
 	bool bWrongWay = false;
@@ -227,6 +232,8 @@ private:
 	void TickResetTest(class AImprezaSTi* Car);
 	FString AutoAfter;          // -TimeTrialAutoAfter=step[,step...] (retry|next|freeroam|stay): one per finish
 	double AutoAfterDelay = 4.0; // -TimeTrialAutoAfterDelay=<s>: results shown this long before the step
+	double AutoResetEvery = 0.0; // -TimeTrialAutoResets=<s>: "back on track" that often during a run (where it puts the car)
+	double AutoResetLast = -100.0;
 
 	bool bReady = false;
 	TArray<FTimeTrialTrack> Tracks;
@@ -256,8 +263,9 @@ private:
 	int32 RouteIndex = 0;       // next entry of Route to drive through
 	int32 Lap = 1;
 	bool bBothPaddlesHeld = false;
+	uint64 LastWheelPollFrame = 0;  // frame this tick last read the wheel (frames skipped: a menu / the pause had it)
 	bool bWheelHold = false;        // the wheel's start button / both paddles are driving RestartHeldSince
-	bool bWheelHoldIsStart = false; // (the start button: a tap is "back on track"; both paddles: a tap does nothing)
+	bool bWheelHoldIsStart = false; // (which of the two; a tap of either is "back on track")
 	double StateStart = 0.0;    // countdown start / run start (world time)
 	double FinishTime = 0.0;
 	TArray<double> Splits;      // run time at each gate passed
@@ -280,13 +288,14 @@ private:
 	int32 LastNearMarker = -1;
 	double NearSince = -100.0;           // world time the car entered the current start box (prompt animates in)
 	FVector LastCarLocation = FVector::ZeroVector;
+	double LastCarTime = 0.0;            // world time of LastCarLocation
 	int32 TestHitchLeft = 0;             // cr.TT.TestHitchFrames
 	double TestHitchNext = 0.0;
 	bool bTestHitchHold = false;
 	// a start whose road isn't streamed in yet (NEXT EVENT across the map): the car is held on the grid and the
 	// countdown waits until the ground under it is there (a blocking streaming flush is requested at once)
 	bool bAwaitGround = false;
-	double AwaitGroundSince = 0.0;       // real time
+	float AwaitGroundWaited = 0.0f;      // game time (s): stops while paused, when nothing streams either
 	// free roam: "back on the road" toast after a reset
 	double RoadResetAt = -100.0;
 	FString RoadResetStreet;

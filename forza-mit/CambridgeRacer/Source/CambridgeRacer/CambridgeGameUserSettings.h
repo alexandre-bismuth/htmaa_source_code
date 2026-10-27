@@ -1,5 +1,5 @@
 // Graphics settings: the engine's scalability groups (UGameUserSettings) plus the project's own
-// knobs that matter on this map (clouds, tree distance, Nanite detail), the FPS overlay, and the sound volumes.
+// knobs that matter on this map (tree distance, Nanite detail, dynamic resolution), the FPS overlay, and the sound volumes.
 // Saved to Saved/Config/<Platform>/GameUserSettings.ini; registered as GameUserSettingsClassName
 // in DefaultEngine.ini. Edited in game through the settings menu (UCambridgeMenuSubsystem, Esc).
 
@@ -43,9 +43,10 @@ public:
 	UPROPERTY(config) bool bABSEnabled = true;
 	UPROPERTY(config) int32 RacingLineMode = 2;        // 0 off, 1 corners only, 2 full (events)
 	UPROPERTY(config) bool bShowMinimap = true;        // HUD minimap, bottom left (UMinimapSubsystem)
-	UPROPERTY(config) bool bVolumetricClouds = true;
 	UPROPERTY(config) int32 TreeDistance = 1;        // 0 near (300 m), 1 medium (400 m), 2 far (700 m)
 	UPROPERTY(config) int32 GeometryDetail = 1;      // 0 low, 1 medium, 2 high (Nanite max pixels per edge 4 / 2 / 1)
+	/** Holds the frame rate: renders at the resolution scale, lower (down to 70 % of it) only while the GPU misses the target */
+	UPROPERTY(config) bool bDynamicResolution = true;
 
 	// sound (Options > Sound, applied at once): the whole game (the audio device), the car (engine, turbo, tyres:
 	// UStiEngineAudio, up to 120 %), the race sounds (countdown, checkpoints, menus: UTimeTrialSubsystem)
@@ -57,4 +58,5 @@ public:
 
 private:
 	void ApplyProjectSettings() const;
+	void ApplyDynamicResolution() const;
 };

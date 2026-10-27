@@ -7,10 +7,14 @@ Parts and their material specs come from sti_parts.json, tuned by PART_OVERRIDES
   map, non-metallic vinyl decals masked from the livery colours or an optional mask_texture, optional
   ao_texture). Clear-coat pins are wired through MakeMaterialAttributes (see Pins).
 - glass / lens: Thin Translucent (tinted transmittance, full-strength reflections), forward shaded.
-- everything else: flat constants (+ optional texture / normal_texture / ao_texture per part).
+- everything else: flat constants (+ optional texture / normal_texture / ao_texture per part); a part with
+  "clearcoat" gets the Clear Coat model (rim: gold paint under a clear coat); "roughness_by_v" = [V threshold,
+  roughness below, roughness above] splits the roughness by UV0 V (tyre: satin sidewall, matte tread).
 Any "*texture" key in sti_parts.json is imported; unknown ones are treated as linear masks.
 Wiring and compile results go to CambridgeRacer/Saved/import_car_materials.txt.
-Nanite off (small, partly translucent), no collision (the physics body is the template skeleton's,
+Nanite off (small, partly translucent); the meshes are imported with an Interchange pipeline override (BUILD):
+the glTF normals (authored, faired paint normals), MikkTSpace tangents, 16-bit tangent basis, full-precision UVs;
+no collision (the physics body is the template skeleton's,
 refitted by SetChassisBoxes).
 AImprezaSTi loads the meshes by path (/Game/Cambridge/Car/sti_<part>/...).
 Also imports the synthesised sounds (make_engine_audio.py) into /Game/Cambridge/Car/Audio
@@ -67,10 +71,12 @@ def constant(m, value, x, y):
 PART_OVERRIDES = {
     "glass": {"thin": [0.30, 0.335, 0.33], "base_color": [0.01, 0.011, 0.012], "opacity": 0.06, "roughness": 0.02, "specular": 0.5},
     "lens": {"thin": [0.90, 0.91, 0.92], "base_color": [0.9, 0.9, 0.9], "opacity": 0.02, "roughness": 0.015, "specular": 0.5},
+    "red": {"thin": [0.80, 0.04, 0.035], "base_color": [0.50, 0.015, 0.02], "opacity": 0.40, "roughness": 0.03,
+            "specular": 0.5},
     "black": {"base_color": [0.022, 0.022, 0.024], "roughness": 0.62, "specular": 0.45},
-    "tire": {"base_color": [0.024, 0.024, 0.025], "roughness": 0.86, "specular": 0.35},
+    "tire": {"base_color": [0.030, 0.030, 0.031], "specular": 0.35},
     "chrome": {"base_color": [0.95, 0.95, 0.96], "metallic": 1.0, "roughness": 0.06},
-    "rim": {"base_color": [0.80, 0.58, 0.24], "metallic": 1.0, "roughness": 0.3},
+    "rim": {"base_color": [0.80, 0.58, 0.24], "metallic": 1.0, "roughness": 0.34},   # + clear coat (sti_parts.json)
     "brake": {"base_color": [0.42, 0.42, 0.43], "metallic": 1.0, "roughness": 0.38},
     "caliper": {"clearcoat": 0.6, "clearcoat_roughness": 0.08, "roughness": 0.4},
     "badge": {"clearcoat": 1.0, "clearcoat_roughness": 0.05},
@@ -80,12 +86,14 @@ PART_OVERRIDES = {
 # M_CarPaint constants (see shaders/carpaint.hlsl for the meaning of each slot)
 PAINT = {
     "P1": [50.0, 0.45, 150.0, 1500.0],   # flake tiling per UV (~10 cm tile), strength, fade start / end (cm)
-    "P2": [0.6, 0.38, 0.2, 0.5],         # paint metallic, binder roughness, flake roughness, decal roughness
+    "P2": [0.6, 0.38, 0.15, 0.5],        # paint metallic, binder roughness, flake roughness, decal roughness
     "P3": [1.0, 0.035, 1.0, 0.08],       # paint coat, coat roughness, decal coat, decal coat roughness
-    "P4": [0.3, 1.0, 0.0, 1.0],          # mica flop, coat normal strength, use AO texture, AO strength
+    "P4": [0.4, 1.0, 0.0, 1.0],          # mica flop, coat normal strength, use AO texture, AO strength
     "P5": [0.0, 0.0, 2.0, 0.0],          # use mask texture, decal metallic, paint green gain (hue fix)
+    "P6": [60.0, 0.015, 200.0, 1200.0],  # orange peel: tiling per UV (~8 cm tile), strength, fade start / end (cm)
 }
 FLAKES = "paint_flakes_normal.png"      # tools/mapgen/make_paint_flakes.py
+ORANGE = "paint_orangepeel_normal.png"  # (same script)
 SHADERS = Path(__file__).resolve().parent / "shaders"
 REPORT = []                             # material wiring / compile results -> Saved/import_car_materials.txt
 MP = unreal.MaterialProperty
@@ -149,6 +157,8 @@ def paint_material(spec, textures):
     p["P5"][0] = 1.0 if have("mask_texture") else 0.0
     if FLAKES not in textures:
         p["P1"][1] = 0.0
+    if ORANGE not in textures:
+        p["P6"][1] = 0.0
     uv = MEL.create_material_expression(m, unreal.MaterialExpressionTextureCoordinate, -900, -200)
     ins = [("UV", uv, ""),
            ("L", tex_object(m, livery, -900, 0), ""),
@@ -156,6 +166,7 @@ def paint_material(spec, textures):
            ("FK", tex_object(m, textures.get(FLAKES, livery), -900, 200), ""),
            ("AOT", tex_object(m, textures[spec["ao_texture"]] if have("ao_texture") else livery, -900, 300), ""),
            ("MK", tex_object(m, textures[spec["mask_texture"]] if have("mask_texture") else livery, -900, 400), ""),
+           ("OP", tex_object(m, textures.get(ORANGE, livery), -900, 450), ""),
            ("D", MEL.create_material_expression(m, unreal.MaterialExpressionPixelDepth, -900, 500), ""),
            ("VN", MEL.create_material_expression(m, unreal.MaterialExpressionVertexNormalWS, -900, 600), ""),
            ("CV", MEL.create_material_expression(m, unreal.MaterialExpressionCameraVectorWS, -900, 700), "")]
@@ -245,7 +256,29 @@ def part_material(spec, textures):
         n.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
         pins.set("normal", n, "RGB")
     pins.set("metallic", constant(m, float(spec.get("metallic", 0.0)), -400, 150))
-    pins.set("roughness", constant(m, float(spec.get("roughness", 0.5)), -400, 250))
+    rv = spec.get("roughness_by_v")
+    if rv:
+        # two roughness zones split by UV0 V (tyre: satin sidewall vs rough tread)
+        uv = MEL.create_material_expression(m, unreal.MaterialExpressionTextureCoordinate, -1100, 250)
+        vmask = MEL.create_material_expression(m, unreal.MaterialExpressionComponentMask, -950, 250)
+        for ch, on in (("r", False), ("g", True), ("b", False), ("a", False)):
+            vmask.set_editor_property(ch, on)
+        MEL.connect_material_expressions(uv, "", vmask, "")
+        sub = MEL.create_material_expression(m, unreal.MaterialExpressionSubtract, -800, 250)
+        MEL.connect_material_expressions(constant(m, float(rv[0]), -950, 320), "", sub, "A")
+        MEL.connect_material_expressions(vmask, "", sub, "B")
+        mul = MEL.create_material_expression(m, unreal.MaterialExpressionMultiply, -700, 250)
+        MEL.connect_material_expressions(sub, "", mul, "A")
+        MEL.connect_material_expressions(constant(m, 40.0, -800, 320), "", mul, "B")
+        sat = MEL.create_material_expression(m, unreal.MaterialExpressionSaturate, -600, 250)
+        MEL.connect_material_expressions(mul, "", sat, "")
+        lrp = MEL.create_material_expression(m, unreal.MaterialExpressionLinearInterpolate, -500, 250)
+        MEL.connect_material_expressions(constant(m, float(rv[2]), -600, 320), "", lrp, "A")
+        MEL.connect_material_expressions(constant(m, float(rv[1]), -600, 380), "", lrp, "B")
+        MEL.connect_material_expressions(sat, "", lrp, "Alpha")
+        pins.set("roughness", lrp)
+    else:
+        pins.set("roughness", constant(m, float(spec.get("roughness", 0.5)), -400, 250))
     if "specular" in spec:
         pins.set("specular", constant(m, float(spec["specular"]), -400, 200))
     if spec.get("emissive"):
@@ -258,7 +291,7 @@ def part_material(spec, textures):
 
 def texture_kind(key, tex):
     """Compression for a texture by the sti_parts.json key that references it."""
-    if tex == FLAKES:
+    if tex in (FLAKES, ORANGE):
         return "flakes"
     if key == "normal_texture":
         return "normal"
@@ -276,15 +309,38 @@ def texture_refs():
                 refs.setdefault(v, texture_kind(k, v))
             elif k.endswith("texture"):
                 unreal.log_warning(f"sti_parts.json {p['part']}.{k}: {v} not found, ignored")
-    if (SRC / FLAKES).exists():
-        refs[FLAKES] = "flakes"
+    for extra in (FLAKES, ORANGE):
+        if (SRC / extra).exists():
+            refs[extra] = "flakes"
     return refs
 
 
 # STi chassis collision (mesh space, cm; ground at z = -8.6): the lower body box starts 20 cm above the
 # ground so 15 cm kerbs reach the tyres, not the box; a narrower box for the cabin
+BUILD = {"recompute_normals": False, "recompute_tangents": True, "use_mikk_t_space": True,
+         "use_high_precision_tangent_basis": True, "use_full_precision_u_vs": True}
 CHASSIS_BOXES = [((-0.6, 0.0, 52.0), (436.0, 168.0, 80.0)), ((-45.0, 0.0, 112.0), (175.0, 120.0, 40.0))]
 PHYSICS_ASSET = "/Game/Vehicles/SportsCar/PA_SportsCar"
+
+
+GLTF_STACK = ("/Interchange/Pipelines/DefaultGLTFAssetsPipeline.DefaultGLTFAssetsPipeline",
+              "/Interchange/Pipelines/DefaultGLTFPipeline.DefaultGLTFPipeline")
+
+
+def mesh_pipeline():
+    """Interchange pipeline-stack override for the car meshes: the engine's glTF stack, with BUILD applied (in
+    memory only, never saved) to its assets pipeline. The stock glTF assets pipeline already keeps the imported
+    normals but stores the tangent basis at 8 bit (normals quantised to ~0.5 deg steps: visible ripples in a
+    mirror-like clear coat) and 16-bit UVs. (EditorStaticMeshLibrary.get/set_lod_build_settings do nothing in the
+    -run=pythonscript commandlet - no StaticMeshEditorSubsystem there; a transient pipeline object is not found
+    by the importer - so the options are set on the loaded pipeline asset.)"""
+    pipe = unreal.load_asset(GLTF_STACK[0])
+    cm = pipe.get_editor_property("common_meshes_properties")
+    for k, v in BUILD.items():
+        cm.set_editor_property(k, v)
+    stack = unreal.InterchangePipelineStackOverride()
+    stack.set_editor_property("override_pipelines", [unreal.SoftObjectPath(p) for p in GLTF_STACK])
+    return stack
 
 
 def main():
@@ -306,6 +362,7 @@ def main():
             t.replace_existing = True
             t.save = True
             tasks.append(t)
+        mesh_options = mesh_pipeline()
         for name, src in sources:
             if EAL.does_directory_exist(f"{DEST}/{name}"):
                 EAL.delete_directory(f"{DEST}/{name}")
@@ -316,6 +373,8 @@ def main():
             t.automated = True
             t.replace_existing = True
             t.save = True
+            if src.suffix == ".glb":
+                t.options = mesh_options
             tasks.append(t)
         ASSETS.import_asset_tasks(tasks)
         return
@@ -352,7 +411,6 @@ def main():
         EAL.save_loaded_asset(t, only_if_is_dirty=False)
         textures[tex] = t
     mats = {p["part"]: part_material(p, textures) for p in SPEC}
-    (ROOT / "CambridgeRacer/Saved/import_car_materials.txt").write_text("\n".join(REPORT) + "\n")
     for part in PARTS:
         for mesh in assets_in(f"{DEST}/sti_{part}", unreal.StaticMesh):
             for i in range(len(mesh.get_editor_property("static_materials"))):
@@ -360,7 +418,20 @@ def main():
             ns = mesh.get_editor_property("nanite_settings")
             ns.enabled = False
             mesh.set_editor_property("nanite_settings", ns)
+            # build options come from the import pipeline (mesh_pipeline); the mesh keeps a copy of the
+            # pipelines it was imported with: report those (get_lod_build_settings returns defaults here)
+            try:
+                got = None
+                for pp in mesh.get_editor_property("asset_import_data").get_pipelines():
+                    if isinstance(pp, unreal.InterchangeGenericAssetsPipeline):
+                        cm = pp.get_editor_property("common_meshes_properties")
+                        got = {k: cm.get_editor_property(k) for k in BUILD}
+                REPORT.append(f"{mesh.get_name()} build: " + (", ".join(f"{k}={got[k]}" for k in BUILD) if got else "?")
+                              + (": ok" if got and all(got[k] == v for k, v in BUILD.items()) else ": MISMATCH"))
+            except Exception as e:                       # (a report problem must never fail the import)
+                REPORT.append(f"{mesh.get_name()} build: ? ({e})")
             EAL.save_loaded_asset(mesh, only_if_is_dirty=False)
+    (ROOT / "CambridgeRacer/Saved/import_car_materials.txt").write_text("\n".join(REPORT) + "\n")
 
 
 main()

@@ -7,7 +7,7 @@ R="$(cd "$(dirname "$0")/../.." && pwd)"
 GI=$R/CambridgeRacer/Saved/Config/MacEditor/Game.ini
 EXTRA=$(shift 3 2>/dev/null && echo "$@")
 [ -f "$GI" ] && cp "$GI" "$GI.stageb_keep"          # keep the player's best times; restored afterwards
-perl -e 'alarm shift; exec @ARGV' "${3:-5400}" "$HOME/UE_5.8/Engine/Binaries/Mac/UnrealEditor" "$R/CambridgeRacer/CambridgeRacer.uproject" /Game/Cambridge/Maps/mit_core \
+perl -e 'alarm shift; exec @ARGV' "${3:-5400}" "${UE_ROOT:-$HOME/UE_5.8}/Engine/Binaries/Mac/UnrealEditor" "$R/CambridgeRacer/CambridgeRacer.uproject" /Game/Cambridge/Maps/mit_core \
   -game -nullrhi -RenderOffscreen -nosound -unattended -nosplash -stdout -benchmark -fps=60 \
   -TimeTrialAuto="$1" -TimeTrialAutoDelay=5 -TimeTrialAutoAfter="$2" $EXTRA 2>&1 \
   | grep -E --line-buffered "LogTimeTrial|Fatal|Ensure|Error: |autopilot"

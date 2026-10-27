@@ -48,8 +48,10 @@ class FMmPainter
 public:
 	void DrawLayers(const UMinimapSubsystem& Map, const FMmXform& X, const TArray<FVector2D>& Frame, const FGeometry& Geo,
 		FSlateWindowElementList& Out, int32 Layer) const;
+	/** CullRadius (cm, > 0): only the stretches that come within it of X.Center (the HUD minimap: the view's reach). */
 	void DrawPolyline(const TArray<FVector2D>& World, int32 First, const FVector2D* Prefix, bool bClosed, const FMmXform& X, const FGeometry& Geo,
-		FSlateWindowElementList& Out, int32 Layer, const FLinearColor& Fill, float Width, const FLinearColor& Edge, float EdgeWidth) const;
+		FSlateWindowElementList& Out, int32 Layer, const FLinearColor& Fill, float Width, const FLinearColor& Edge, float EdgeWidth,
+		double CullRadius = 0.0) const;
 	static void DrawIcon(const FSlateBrush* Brush, const FVector2D& Center, const FVector2D& Size, const FGeometry& Geo,
 		FSlateWindowElementList& Out, int32 Layer, const FLinearColor& Tint = FLinearColor::White, float AngleRad = 0.0f);
 	static void DrawText(const FString& Text, const FVector2D& TopLeft, const FSlateFontInfo& Font, const FGeometry& Geo,

@@ -93,11 +93,17 @@ protected:
 	/** Throttle requested by the driver (before assists such as traction control) */
 	float DriverThrottle = 0.0f;
 
+	/** Brake requested by the driver (keys, trigger, pedal, the test drivers); Tick applies both */
+	float DriverBrake = 0.0f;
+
 	/** The brake key / trigger was down last tick (Tick follows its analog value) */
 	bool bBrakeAxisHeld = false;
 
 	/** Driver assists hook: maps driver throttle to the throttle sent to the vehicle. Called every tick. */
 	virtual float FilterThrottle(float InDriverThrottle, float Delta) { return InDriverThrottle; }
+
+	/** Sends the driver's throttle and brake to the vehicle, every tick (a car may swap them in reverse) */
+	virtual void ApplyDriverInputs(float Delta);
 
 	/** SnapCamera: ticks left with the spring arms' rotation lag off (then it is restored to these). */
 	int32 CameraSnapTicks = 0;
@@ -198,7 +204,7 @@ public:
 
 	/** Reset (R / gamepad Y in free roam, and the automatic flip check). In free roam it puts the car back on the
 	 *  nearest street (FindRoadResetSpot) with a short fade and a toast; during an event the time trial's "back on
-	 *  track" (before the next checkpoint) instead, so a flip mid-race never lands on another street. */
+	 *  track" (back on the line just behind the car's progress) instead, so a flip mid-race never lands on another street. */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	void DoResetVehicle();
 

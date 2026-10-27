@@ -164,7 +164,7 @@ FWheelInputState UCambridgeWheelSubsystem::GetState() const
 	return S;
 }
 
-bool UCambridgeWheelSubsystem::ConsumeEdge(bool& bEdge, double EdgeTime)
+bool UCambridgeWheelSubsystem::ConsumeEdge(bool& bEdge, const double& EdgeTime)
 {
 	FScopeLock L(&Lock);
 	const bool B = bEdge && FPlatformTime::Seconds() - EdgeTime < MaxEdgeAge;

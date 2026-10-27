@@ -37,6 +37,15 @@ namespace
 
 	double MmCross(const FVector2D& A, const FVector2D& B) { return A.X * B.Y - A.Y * B.X; }
 
+	/** Squared distance from P to the segment A-B. */
+	double MmSegmentDistSquared(const FVector2D& P, const FVector2D& A, const FVector2D& B)
+	{
+		const FVector2D AB = B - A;
+		const double L2 = AB.SizeSquared();
+		const double T = L2 > 0.0 ? FMath::Clamp(FVector2D::DotProduct(P - A, AB) / L2, 0.0, 1.0) : 0.0;
+		return FVector2D::DistSquared(P, A + AB * T);
+	}
+
 	/** Rounded rectangle polygon (convex), clockwise in screen space. */
 	void MmRoundedRect(TArray<FVector2D>& Out, const FVector2D& Size, double Radius, int32 Segs = 5)
 	{
@@ -179,31 +188,69 @@ void FMmPainter::DrawLayers(const UMinimapSubsystem& Map, const FMmXform& X, con
 }
 
 void FMmPainter::DrawPolyline(const TArray<FVector2D>& World, int32 First, const FVector2D* Prefix, bool bClosed, const FMmXform& X,
-	const FGeometry& Geo, FSlateWindowElementList& Out, int32 Layer, const FLinearColor& Fill, float Width, const FLinearColor& Edge, float EdgeWidth) const
+	const FGeometry& Geo, FSlateWindowElementList& Out, int32 Layer, const FLinearColor& Fill, float Width, const FLinearColor& Edge, float EdgeWidth,
+	double CullRadius) const
 {
+	const FPaintGeometry PG = Geo.ToPaintGeometry();
+	auto Emit = [&]()
+	{
+		if (LinePts.Num() >= 2)
+		{
+			if (EdgeWidth > 0.0f)
+			{
+				FSlateDrawElement::MakeLines(Out, Layer, PG, LinePts, ESlateDrawEffect::None, Edge, true, EdgeWidth);
+			}
+			FSlateDrawElement::MakeLines(Out, Layer + 1, PG, LinePts, ESlateDrawEffect::None, Fill, true, Width);
+		}
+		LinePts.Reset();
+	};
+	// the points in drawing order: Prefix, World[First ..], World[0] again on a closed line
+	const int32 Start = FMath::Max(0, First);
+	const int32 NumWorld = FMath::Max(World.Num() - Start, 0);
+	const int32 Num = (Prefix ? 1 : 0) + NumWorld + (bClosed && World.Num() > 1 ? 1 : 0);
+	auto At = [&](int32 k) -> const FVector2D&
+	{
+		if (Prefix)
+		{
+			if (k == 0)
+			{
+				return *Prefix;
+			}
+			--k;
+		}
+		return k < NumWorld ? World[Start + k] : World[0];
+	};
 	LinePts.Reset();
-	if (Prefix)
+	if (CullRadius <= 0.0)
 	{
-		LinePts.Add(X.ToLocal(*Prefix));
-	}
-	for (int32 i = FMath::Max(0, First); i < World.Num(); ++i)
-	{
-		LinePts.Add(X.ToLocal(World[i]));
-	}
-	if (bClosed && World.Num() > 1)
-	{
-		LinePts.Add(X.ToLocal(World[0]));
-	}
-	if (LinePts.Num() < 2)
-	{
+		for (int32 k = 0; k < Num; ++k)
+		{
+			LinePts.Add(X.ToLocal(At(k)));
+		}
+		Emit();
 		return;
 	}
-	const FPaintGeometry PG = Geo.ToPaintGeometry();
-	if (EdgeWidth > 0.0f)
+	// only the segments that come within CullRadius of the view centre, each run of them its own line: the HUD minimap
+	// shows ~250 m of an event line that is up to 9 km (3000 points) long
+	const double R2 = CullRadius * CullRadius;
+	for (int32 k = 1; k < Num; ++k)
 	{
-		FSlateDrawElement::MakeLines(Out, Layer, PG, LinePts, ESlateDrawEffect::None, Edge, true, EdgeWidth);
+		const FVector2D& A = At(k - 1);
+		const FVector2D& B = At(k);
+		if (MmSegmentDistSquared(X.Center, A, B) <= R2)
+		{
+			if (LinePts.Num() == 0)
+			{
+				LinePts.Add(X.ToLocal(A));
+			}
+			LinePts.Add(X.ToLocal(B));
+		}
+		else
+		{
+			Emit();
+		}
 	}
-	FSlateDrawElement::MakeLines(Out, Layer + 1, PG, LinePts, ESlateDrawEffect::None, Fill, true, Width);
+	Emit();
 }
 
 void FMmPainter::DrawIcon(const FSlateBrush* Brush, const FVector2D& Center, const FVector2D& Size, const FGeometry& Geo,
@@ -282,6 +329,14 @@ int32 SMinimapView::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 	X.Scale = (S.Y * 0.5) / (HalfHeightM * 100.0);
 	X.SetAngle(-FMath::DegreesToRadians(SmoothYaw + 90.0));   // car forward -> screen up
 
+	// the lines are drawn only within reach of the view: the farthest corner from the car, plus their width (world cm)
+	double ReachPx = 0.0;
+	for (const FVector2D& Corner : { FVector2D(0.0, 0.0), FVector2D(S.X, 0.0), FVector2D(0.0, S.Y), S })
+	{
+		ReachPx = FMath::Max(ReachPx, FVector2D::Distance(Corner, X.Origin));
+	}
+	const double ReachCm = (ReachPx + 20.0) / X.Scale;
+
 	const FGeometry& G = AllottedGeometry;
 	FSlateDrawElement::MakeBox(Out, LayerId, G.ToPaintGeometry(), FCoreStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, MmBackground.CopyWithNewOpacity(0.6f));
 	Painter.DrawLayers(*M, X, Frame, G, Out, LayerId + 1);
@@ -292,7 +347,7 @@ int32 SMinimapView::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 	{
 		// event: its route (the racing line) and the next gates
 		const FTimeTrialTrack& T = TT->GetTracks()[Active];
-		Painter.DrawPolyline(M->GetEventLine(Active), 0, nullptr, T.bCircuit, X, G, Out, LayerId + 2, MmEventFill, 3.5f, MmEventEdge, 6.5f);
+		Painter.DrawPolyline(M->GetEventLine(Active), 0, nullptr, T.bCircuit, X, G, Out, LayerId + 2, MmEventFill, 3.5f, MmEventEdge, 6.5f, ReachCm);
 		TT->GetUpcomingGates(GateScratch, 2);
 		const int32 Left = TT->GetGatesLeft();
 		for (int32 k = GateScratch.Num() - 1; k >= 0; --k)
@@ -318,7 +373,7 @@ int32 SMinimapView::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 	if (M->IsRouteActive())
 	{
 		const FVector2D Proj = M->GetRouteProjection();
-		Painter.DrawPolyline(M->GetRoute(), M->GetRouteSegment() + 1, &Proj, false, X, G, Out, LayerId + 5, MmGpsFill, 4.5f, MmGpsEdge, 8.0f);
+		Painter.DrawPolyline(M->GetRoute(), M->GetRouteSegment() + 1, &Proj, false, X, G, Out, LayerId + 5, MmGpsFill, 4.5f, MmGpsEdge, 8.0f, ReachCm);
 	}
 	LandmarkMap::PaintMinimap(*M, X, S, G, Out, LayerId + 6);     // landmark tags (clamped to the edge when off the map)
 	if (M->HasDestination() && Active < 0)

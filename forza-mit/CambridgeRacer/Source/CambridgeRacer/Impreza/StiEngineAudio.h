@@ -63,9 +63,10 @@ private:
 	float SmoothRpm = 925.0f;
 	float SmoothLoad = 1.0f;
 	float SmoothSqueal = 0.0f;
-	float PrevThrottle = 0.0f;
+	float PrevPedal = 0.0f;
 	float ShiftRpm = 0.0f;
-	float LimiterClock = 0.0f;
+	int32 LimiterFrames = 0;
+	int32 LimiterHalfFrames = 1;
 	float CrackleEnergy = 0.0f;
 	int32 LastDriveGear = 0;
 	int32 NextPop = 0;

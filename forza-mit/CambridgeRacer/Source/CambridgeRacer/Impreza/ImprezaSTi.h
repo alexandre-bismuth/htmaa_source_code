@@ -63,8 +63,12 @@ public:
 	/** The launch menu parks the car behind it: no engine sound until it closes. */
 	void SetEngineSoundMuted(bool bMuted);
 
-	/** Turbo boost state 0..1 (for HUD / sound) */
-	UFUNCTION(BlueprintPure, Category = "Engine") float GetBoost() const { return Boost; }
+	/** Boost pressure 0..1 (for HUD / sound): the spool state, scaled by how much the turbo makes at this rpm */
+	UFUNCTION(BlueprintPure, Category = "Engine") float GetBoost() const { return BoostPressure; }
+	/** The throttle the engine gets (after traction control; the brake key in keyboard reverse) */
+	float GetEngineThrottle() const { return EngineThrottle; }
+	/** The driver's own throttle pedal, before traction control (lifting off, not a TC cut, dumps the boost) */
+	float GetDriverPedal() const { return DriverPedal; }
 
 protected:
 	virtual float FilterThrottle(float DriverInput, float Delta) override;
@@ -82,6 +86,10 @@ protected:
 	/** Chaos has no clutch (engine rpm is tied to the wheels). Below this rpm in 1st/reverse we
 	 *  model a slipping clutch: the wheels get the torque the engine makes at the slip rpm. */
 	UPROPERTY(EditAnywhere, Category = "Engine") float ClutchSlipRPM = 4000.0f;
+	/** The same in reverse: a gentle start, no turbo (nobody launches backwards at 4000 rpm) */
+	UPROPERTY(EditAnywhere, Category = "Engine") float ReverseSlipRPM = 2200.0f;
+	/** The brake must hold the car at a standstill this long (s) before the automatic gearbox engages reverse */
+	UPROPERTY(EditAnywhere, Category = "Gearbox") float ReverseDelay = 0.4f;
 
 	/** Drive-wheel slip ratio allowed before traction control cuts throttle */
 	UPROPERTY(EditAnywhere, Category = "Assists") float TCSlipSport = 0.18f;
@@ -95,7 +103,16 @@ private:
 	void EnsureAssistInput();
 	void ToggleABSInput() { SetABS(!bABS); }
 
+	virtual void ApplyDriverInputs(float Delta) override;
+	float ReverseHold = 0.0f;        // s the brake has held the car still
+	bool bWheelDriving = false;      // the home-built wheel drives the car this tick
+	double PaddleShiftTime = -100.0; // the last paddle shift, and the gear before it (a chord puts it back)
+	int32 GearBeforePaddle = 0;
+
 	float Boost = 0.0f;
+	float BoostPressure = 0.0f;
+	float EngineThrottle = 0.0f;
+	float DriverPedal = 0.0f;
 	float AppliedMaxTorque = PeakTorque;
 	float TCCut = 0.0f;
 	float LastFilteredThrottle = 0.0f;

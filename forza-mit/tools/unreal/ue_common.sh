@@ -8,7 +8,8 @@ UPROJECT="$(cd "$(dirname "$0")/../../CambridgeRacer" && pwd)/CambridgeRacer.upr
 # anything logs an error, and the old "| grep ... || true" pipelines swallowed real failures).
 ue_py() {
   _log="${3:-$(mktemp -t ue_py)}"
-  "$UE_CMD" "$UPROJECT" -run=pythonscript -script="$1" -nullrhi -unattended -nosplash -stdout >>"$_log" 2>&1
+  # (|| true: a plain call in a "set -e" script must reach the success check below, not abort on that exit code)
+  "$UE_CMD" "$UPROJECT" -run=pythonscript -script="$1" -nullrhi -unattended -nosplash -stdout >>"$_log" 2>&1 || true
   grep -E "LogPython.*(Error|Warning)|Python script executed|Traceback${2:+|$2}" "$_log" | grep -v DeprecationWarning
   if ! grep -q "Python script executed successfully" "$_log"; then
     echo "FAILED: $1 (full log: $_log)" >&2

@@ -20,6 +20,7 @@ DEST = f"/Game/Cambridge/{REGION}/Meshes"
 
 # mesh classes without collision: water (walled off), road paint, and the whole ctx_ backdrop ring
 NO_COLLISION = {"water", "markings_white", "markings_yellow"}   # paint is 6 mm above the road
+# (roofs keep collision: portico treads and podium tops are roofs, and some roof slopes start at street level)
 
 
 def collides(cls):
@@ -76,6 +77,13 @@ def main():
             unreal.EditorStaticMeshLibrary.set_lod_build_settings(m, 0, bs)
             body = m.get_editor_property("body_setup")
             if body:
+                if not collides(mesh_class(m.get_name())):
+                    # no collision at all: else the importer's convex hull of the whole tile is the "simple as complex"
+                    # collision (a roofs tile's hull spanned the streets: the car spawned inside it and sank, 2026-10-27)
+                    agg = body.get_editor_property("agg_geom")
+                    for k in ("convex_elems", "box_elems", "sphyl_elems", "sphere_elems"):
+                        agg.set_editor_property(k, [])
+                    body.set_editor_property("agg_geom", agg)
                 body.set_editor_property(
                     "collision_trace_flag",
                     unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE if collides(mesh_class(m.get_name()))
@@ -87,13 +95,18 @@ def main():
     by_class = {}
     for m in meshes:
         c = mesh_class(m.get_name())
-        e = by_class.setdefault(c, {"meshes": 0, "tris": 0, "nanite_on": 0, "full_precision_uvs": 0})
+        e = by_class.setdefault(c, {"meshes": 0, "tris": 0, "nanite_on": 0, "full_precision_uvs": 0, "simple_collision_elems": 0})
         # (tris = fallback mesh triangles; with relative error 0 it equals the source)
         e["meshes"] += 1
         e["tris"] += m.get_num_triangles(0)
         e["nanite_on"] += int(m.get_editor_property("nanite_settings").enabled)
         bs = unreal.EditorStaticMeshLibrary.get_lod_build_settings(m, 0)
         e["full_precision_uvs"] += int(bs.get_editor_property("use_full_precision_u_vs"))
+        body = m.get_editor_property("body_setup")
+        if body:
+            agg = body.get_editor_property("agg_geom")
+            e["simple_collision_elems"] += sum(len(agg.get_editor_property(k))
+                                               for k in ("convex_elems", "box_elems", "sphyl_elems", "sphere_elems"))
     for c, e in by_class.items():
         e["generated_tris"] = manifest["triangles"].get(c)
     out = SRC / "ue_import_report.json"

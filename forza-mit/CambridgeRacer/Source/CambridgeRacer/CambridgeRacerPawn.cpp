@@ -127,13 +127,13 @@ void ACambridgeRacerPawn::Tick(float Delta)
 		const float BrakeAxis = FMath::Clamp(EIC->GetBoundActionValue(BrakeAction).Get<float>(), 0.0f, 1.0f);
 		if (BrakeAxis > 0.0f || bBrakeAxisHeld)
 		{
-			ChaosVehicleMovement->SetBrakeInput(BrakeAxis);
+			DriverBrake = BrakeAxis;
 			bBrakeAxisHeld = BrakeAxis > 0.0f;
 		}
 	}
 
 	// assists (e.g. traction control) depend on wheel state, so re-filter the throttle every frame
-	ChaosVehicleMovement->SetThrottleInput(FilterThrottle(DriverThrottle, Delta));
+	ApplyDriverInputs(Delta);
 
 	// add some angular damping if the vehicle is in midair
 	bool bMovingOnGround = ChaosVehicleMovement->IsMovingOnGround();
@@ -225,22 +225,26 @@ void ACambridgeRacerPawn::DoSteering(float SteeringValue)
 
 void ACambridgeRacerPawn::DoThrottle(float ThrottleValue)
 {
-	// add the input (through the assists filter; Tick keeps re-applying it)
+	// add the input (Tick applies it through the assists filter)
 	DriverThrottle = ThrottleValue;
-	ChaosVehicleMovement->SetThrottleInput(FilterThrottle(DriverThrottle, 0.0f));
 
 	// reset the brake input
-	ChaosVehicleMovement->SetBrakeInput(0.0f);
+	DriverBrake = 0.0f;
 }
 
 void ACambridgeRacerPawn::DoBrake(float BrakeValue)
 {
 	// add the input
-	ChaosVehicleMovement->SetBrakeInput(BrakeValue);
+	DriverBrake = BrakeValue;
 
 	// reset the throttle input
 	DriverThrottle = 0.0f;
-	ChaosVehicleMovement->SetThrottleInput(0.0f);
+}
+
+void ACambridgeRacerPawn::ApplyDriverInputs(float Delta)
+{
+	ChaosVehicleMovement->SetThrottleInput(FilterThrottle(DriverThrottle, Delta));
+	ChaosVehicleMovement->SetBrakeInput(DriverBrake);
 }
 
 void ACambridgeRacerPawn::DoBrakeStart()
@@ -255,7 +259,7 @@ void ACambridgeRacerPawn::DoBrakeStop()
 	BrakeLights(false);
 
 	// reset brake input to zero
-	ChaosVehicleMovement->SetBrakeInput(0.0f);
+	DriverBrake = 0.0f;
 }
 
 void ACambridgeRacerPawn::DoHandbrakeStart()
@@ -369,7 +373,7 @@ void ACambridgeRacerPawn::DoResetVehicle()
 	UWorld* World = GetWorld();
 	UTimeTrialSubsystem* TT = World && IsPlayerControlled() ? World->GetSubsystem<UTimeTrialSubsystem>() : nullptr;
 	// during an event the time trial owns resets (it takes R / Y itself: tap = back on track). What gets here then is
-	// the flip check: back before the next checkpoint like a tap of R, or upright in place on the grid
+	// the flip check: back on track like a tap of R, or upright in place on the grid
 	if (TT && TT->IsInEvent() && TT->GetState() != ETimeTrialState::Finished)
 	{
 		if (TT->GetState() == ETimeTrialState::Running)

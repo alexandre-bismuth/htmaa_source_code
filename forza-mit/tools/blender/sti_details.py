@@ -1,5 +1,6 @@
 """Body details: lamps, grille + intake honeycomb, fog lamps, lip, hood scoop, cowl, wipers, mirrors, door handles,
-side markers, wing, exhaust, wheel-well liners, under-tray. Left-side pieces are mirrored to the right.
+side markers, wing, exhaust, underbody mechanicals. Left-side pieces are mirrored to the right.
+(The floor pan, bumper undersides and wheel wells are part of the body shell: sti_body zones 4 and 5.)
 
 Everything is placed on the body by ray casts against the uncut skin (bvh), so it follows the body shape.
 """
@@ -108,19 +109,38 @@ def lamp_anchor(patch_bvh, toward, axis):
     return loc if loc is not None else Vector(toward)
 
 
+def facet(bm, amp, seed=0.0):
+    """Optic-facet look for reflectors: every vertex moves along its normal by a pseudo-random +-amp, so with
+    flat shading (add with smooth=4) neighbouring faces tilt a few degrees and sparkle like lamp optics."""
+    bm.normal_update()
+    nrm = {v: v.normal.copy() for v in bm.verts}
+    for v in bm.verts:
+        h = math.sin(v.co.x * 1371.3 + v.co.y * 2113.7 + v.co.z * 1733.1 + seed) * 43758.5453
+        v.co += nrm[v] * amp * (2.0 * (h - math.floor(h)) - 1.0)
+    return bm
+
+
+def shroud(r0, r1, depth, seg=48):
+    """Projector shroud: a short chrome cone around the projector lens, flaring toward the viewer (+Y)."""
+    return lathe([(r1 + 0.002, depth - 0.002), (r1, depth), (r0, 0.0), (r0, -0.004)], seg)
+
+
 def headlamps(parts, patches):
+    """Bugeye headlamp: clear domed cover; inside, a chrome housing, the big multi-reflector bowl with the HID
+    projector (dark lens in a chrome shroud) and, in the teardrop tail, the small high-beam / indicator
+    reflector with an amber bulb."""
     s1, s2 = [Vector(c) for c, r in sti_body.HEADLAMP_SPHERES]
-    d_in = Vector((-0.75, -0.65, 0.0)).normalized()
+    d0 = Vector((-0.75, -0.65, 0.0)).normalized()
     for side, patch in zip((1, -1), patches):
+        d_in = Vector((d0.x, side * d0.y, 0.0))
         pb = patch.copy()
         pb.normal_update()
         bvh = BVHTree.FromBMesh(pb)
-        flip = Matrix.Diagonal((1, side, 1, 1))
-        # clear cover (slightly proud of the body) and the black housing back wall
+        # clear cover (slightly proud of the body) and the chrome housing back wall (faceted)
         parts.add("lens", dome(offset(patch.copy(), 0.0015), 0.020), smooth=70)
         back = patch.copy()
-        bmesh.ops.translate(back, vec=Vector((d_in.x, side * d_in.y, 0)) * 0.050, verts=back.verts)
-        parts.add("under", back, smooth=70)
+        bmesh.ops.translate(back, vec=d_in * 0.050, verts=back.verts)
+        parts.add("chrome", facet(back, 0.0007, 1.0), smooth=4)
         # main lamp: big chrome multi-reflector with a projector, small lamp in the teardrop tail
         axis = Vector((0.93, 0.33 * side, 0.12)).normalized()
         c1 = Vector((s1.x, side * s1.y, s1.z))
@@ -129,7 +149,8 @@ def headlamps(parts, patches):
         M1 = Matrix.Translation(a1) @ frame(axis)
         parts.add("chrome", transformed(reflector(0.074, 0.032), M1), smooth=4)
         parts.add("chrome", transformed(ring(0.074, 0.082, 0.002), M1), smooth=30)
-        parts.add("black", transformed(ring(0.030, 0.041, 0.004, 0.012), M1), smooth=30)
+        parts.add("chrome", transformed(shroud(0.0335, 0.050, 0.020), M1), smooth=30)
+        parts.add("black", transformed(ring(0.0305, 0.0345, 0.003, 0.008), M1), smooth=30)
         parts.add("glass", transformed(projector(0.031), Matrix.Translation(a1 - axis * 0.004) @ frame(axis)), smooth=60)
         parts.add("chrome", transformed(ring(0.006, 0.030, -0.018, 0.002), M1), smooth=30)
         tail = c1.lerp(c2, 0.58)
@@ -137,42 +158,96 @@ def headlamps(parts, patches):
         M2 = Matrix.Translation(a2) @ frame(axis)
         parts.add("chrome", transformed(reflector(0.032, 0.018, 0.2, 16, 4), M2), smooth=4)
         parts.add("chrome", transformed(ring(0.032, 0.037, 0.002), M2), smooth=30)
+        parts.add("amber", transformed(projector(0.0065, 16), M2 @ Matrix.Translation((0, -0.007, 0))), smooth=60)
         parts.add("lens", transformed(projector(0.010, 24), M2), smooth=60)
         pb.free()
         patch.free()
 
 
+def fin(pts, d_in, depth, half=0.0007):
+    """Thin double-sided divider wall from a polyline on the lamp face, `depth` deep along d_in."""
+    bm = bmesh.new()
+    for s in (1, -1):
+        rows = [[p + Vector((0, s * half, 0)) - d_in * 0.001, p + Vector((0, s * half, 0)) + d_in * depth]
+                for p in pts]
+        b = grid_surface(rows)
+        b.normal_update()
+        if sum(f.normal.y for f in b.faces) * s < 0:
+            bmesh.ops.reverse_faces(b, faces=b.faces)
+        merge(bm, b)
+    return bm
+
+
+TL_SPLIT = 0.585          # |y| of the divider between the red tail / stop section and the clear reverse section
+TL_ROUND = 0.040          # radius of the round tail / stop element
+
+
 def taillamps(parts, patches):
-    s = [Vector(c) for c, r in sti_body.TAILLAMP_SPHERES]
-    d_in = Vector((0.8, -0.6, 0.0)).normalized()
+    """Tail lamp with real depth, built like the real thing: a red-tinted translucent domed cover ('red') over
+    chrome faceted optics 26 mm in, so the lamp reads red from the tint itself in any light (not from emissive);
+    the round tail / stop element (chrome bezel, faceted bowl, chrome ring + bulb); the reverse section under a
+    clear cover with its own reflector and bulb; a black divider; the chrome housing 3 cm in."""
+    d0 = Vector((0.8, -0.6, 0.0)).normalized()
     for side, patch in zip((1, -1), patches):
+        d_in = Vector((d0.x, side * d0.y, 0.0))
         patch.normal_update()
-        back = patch.copy()
-        bmesh.ops.translate(back, vec=Vector((d_in.x, side * d_in.y, 0)) * 0.03, verts=back.verts)
-        parts.add("chrome", back, smooth=70)
-        dome(offset(patch, 0.0015), 0.007)
-        bmesh.ops.bisect_plane(patch, geom=patch.verts[:] + patch.edges[:] + patch.faces[:],
-                               plane_co=(0, side * 0.585, 0), plane_no=(0, 1, 0))
-        red, clear = patch.copy(), patch.copy()
-        def inboard(f):
-            c = f.calc_center_median()
-            return abs(c.y) < 0.585
-        bmesh.ops.delete(red, geom=[f for f in red.faces if inboard(f)], context="FACES")
-        bmesh.ops.delete(clear, geom=[f for f in clear.faces if not inboard(f)], context="FACES")
-        parts.add("red", red, smooth=70)
-        parts.add("lens", clear, smooth=70)
-        # the bugeye's round tail-lamp element: two raised rings in the red lens
         bvh = BVHTree.FromBMesh(patch)
-        axis = Vector((-0.90, 0.42 * side, 0.0)).normalized()
-        c = Vector((-2.07, side * 0.672, 0.818 + G))
+        # the round element sits in the middle of the red section, facing out of it
+        red_f = [f for f in patch.faces if abs(f.calc_center_median().y) > TL_SPLIT + 0.03]
+        area = sum(f.calc_area() for f in red_f)
+        c = sum((f.calc_center_median() * f.calc_area() for f in red_f), Vector()) / area
+        axis = sum((f.normal * f.calc_area() for f in red_f), Vector()).normalized()
         a = lamp_anchor(bvh, c, axis)
-        M = Matrix.Translation(a + axis * 0.0022) @ frame(axis)
-        parts.add("red", transformed(ring(0.040, 0.047, 0.0015, 0.004), M), smooth=30)
-        # chrome reflector bowls behind the translucent lens: the round lamp and a smaller inboard one
-        Mb = Matrix.Translation(a - axis * 0.012) @ frame(axis)
-        parts.add("chrome", transformed(reflector(0.044, 0.018, 0.2, 20, 5), Mb), smooth=4)
-        parts.add("black", transformed(lathe([(0.004, 0.006), (0.009, 0.0), (0.009, -0.01)], 12), Mb), smooth=40)
-        parts.add("red", transformed(ring(0.016, 0.020, 0.0012, 0.003), M), smooth=30)
+        # chrome housing back wall
+        back = patch.copy()
+        bmesh.ops.translate(back, vec=d_in * 0.03, verts=back.verts)
+        parts.add("chrome", facet(back, 0.0008, 2.0), smooth=4)
+        # inner optics, split at the divider
+        inner = patch.copy()
+        bmesh.ops.bisect_plane(inner, geom=inner.verts[:] + inner.edges[:] + inner.faces[:],
+                               plane_co=(0, side * TL_SPLIT, 0), plane_no=(0, 1, 0))
+        cut = sorted((v.co.copy() for v in inner.verts if abs(abs(v.co.y) - TL_SPLIT) < 1e-5), key=lambda p: p.z)
+        red = inner.copy()
+        rev_faces = [f for f in inner.faces if abs(f.calc_center_median().y) < TL_SPLIT]
+        rev_c = sum((f.calc_center_median() for f in rev_faces), Vector()) / max(1, len(rev_faces))
+        rev_n = sum((f.normal * f.calc_area() for f in rev_faces), Vector()).normalized()
+        inner.free()
+
+        # the red optic sits deep (26 mm, just in front of the housing wall) so the round element's bowl stands
+        # fully in front of it - no hole to cut
+        bmesh.ops.delete(red, geom=[f for f in red.faces if abs(f.calc_center_median().y) < TL_SPLIT], context="FACES")
+        bmesh.ops.translate(red, vec=d_in * 0.026, verts=red.verts)
+        parts.add("chrome", facet(red, 0.0009, 3.0), smooth=4)         # optic: chrome seen through red
+        if len(cut) > 1:
+            parts.add("black", fin(cut, d_in, 0.029), smooth=40)
+        # domed cover: red-tinted translucent over the tail / stop section, clear over the reverse lamp
+        cover = dome(offset(patch, 0.0015), 0.007)
+        bmesh.ops.bisect_plane(cover, geom=cover.verts[:] + cover.edges[:] + cover.faces[:],
+                               plane_co=(0, side * TL_SPLIT, 0), plane_no=(0, 1, 0))
+        clear = cover.copy()
+        bmesh.ops.delete(cover, geom=[f for f in cover.faces if abs(f.calc_center_median().y) < TL_SPLIT],
+                         context="FACES")
+        bmesh.ops.delete(clear, geom=[f for f in clear.faces if abs(f.calc_center_median().y) >= TL_SPLIT],
+                         context="FACES")
+        parts.add("red", cover, smooth=70)
+        parts.add("lens", clear, smooth=70)
+        # round tail / stop element
+        R = TL_ROUND
+        M = Matrix.Translation(a - axis * 0.004) @ frame(axis)
+        # chrome bezel whose skirt reaches back to the red optic (hides the hole cut in it)
+        parts.add("chrome", transformed(ring(R - 0.001, R + 0.011, 0.0, 0.013), M), smooth=30)
+        Mb = Matrix.Translation(a - axis * 0.006) @ frame(axis)
+        parts.add("chrome", transformed(reflector(R, 0.020, 0.2, 24, 6), Mb), smooth=4)
+        parts.add("chrome", transformed(ring(0.011, 0.016, -0.012, 0.003), Mb), smooth=30)
+        parts.add("lens", transformed(projector(0.008, 16), Mb @ Matrix.Translation((0, -0.014, 0))), smooth=60)
+        # reverse lamp: small chrome reflector + bulb in the clear section
+        if rev_faces:
+            Mr = Matrix.Translation(rev_c + rev_n * 0.0 + d_in * 0.010) @ frame(rev_n)
+            parts.add("chrome", transformed(reflector(0.024, 0.012, 0.2, 20, 4), Mr), smooth=4)
+            parts.add("lens", transformed(projector(0.007, 16), Mr @ Matrix.Translation((0, -0.006, 0))), smooth=60)
+            # JDM: amber rear indicator bulb in the clear section, below the reverse bulb
+            Ma = Matrix.Translation(rev_c + d_in * 0.012 + Vector((0, 0, -0.022))) @ frame(rev_n)
+            parts.add("amber", transformed(projector(0.0065, 16), Ma), smooth=60)
         patch.free()
 
 
@@ -298,6 +373,15 @@ def front_end(parts):
 
 
 # --- hood scoop -------------------------------------------------------------------------------------------
+def face_toward(bm, c):
+    """Orient every face of bm so its normal points toward the point c (inside of a cavity)."""
+    bm.normal_update()
+    flip = [f for f in bm.faces if f.normal.dot(Vector(c) - f.calc_center_median()) < 0]
+    if flip:
+        bmesh.ops.reverse_faces(bm, faces=flip)
+    return bm
+
+
 def hood_scoop(parts):
     xs = [1.10 + (1.565 - 1.10) * (k / 30) ** 0.8 for k in range(31)]
     nj = 33
@@ -311,14 +395,17 @@ def hood_scoop(parts):
             s = -1 + 2 * j / (nj - 1)
             y = s * (w + 0.06)
             loc, n = top_pt(x, y)
-            prof = H * max(0.0, 1 - abs(s * (w + 0.06) / w) ** 5) ** 0.45 if abs(y) < w else 0.0
-            # soft shoulder outside the scoop width
-            if abs(y) >= w:
-                prof = 0.0
-            row.append(loc + Vector((0, 0, prof + 0.0015)))
+            prof = H * max(0.0, 1 - abs(y / w) ** 5) ** 0.45 if abs(y) < w else 0.0
+            # built into the hood: the shell rises out of the hood skin (its outer band dives below it), so
+            # there is no step / gap line at the base, just the fillet where the two surfaces meet
+            bury = 0.0012 + 0.006 * max(0.0, min(1.0, (abs(y) - w) / 0.05)) + 0.004 * max(0.0, 1 - t / 0.05)
+            row.append(loc + Vector((0, 0, prof - bury)))
         secs.append(row)
     shell = grid_surface(secs)
     shell = subsurf_bm(shell, 1)
+    pl = shell.faces.layers.int.new("proj")
+    for f in shell.faces:
+        f[pl] = 2                  # own UV island (sti_uv 'scoop'): livery + baked AO like the hood
     parts.add("paint", shell, smooth=60)
     # mouth: rolled lip, black throat and back wall
     x = xs[-1]
@@ -334,11 +421,24 @@ def hood_scoop(parts):
     body = [p + Vector((-0.010, 0, -0.004 if p.z > lip[0].z + 0.01 else 0.003)) for p in inner]
     deep = [p + Vector((-0.12, 0, -0.012)) for p in body]
     parts.add("paint", grid_surface([lip, [p + Vector((-0.004, 0, 0)) for p in inner]]), smooth=60)
-    parts.add("black", grid_surface([[p + Vector((-0.004, 0, 0)) for p in inner], body, deep]), smooth=60)
-    vs = [p for p in deep]
+    # the mouth is a closed dark cavity (one-sided faces all facing into it): throat roof, a floor over the
+    # hood, and the intercooler face at the back - otherwise the hood under the shell shows through the mouth
+    cz = (lip[0].z + lip[-1].z) / 2
+    cav = Vector((x - 0.06, 0.0, cz + 0.015))
+    roof = grid_surface([[p + Vector((-0.004, 0, 0)) for p in inner], body, deep])
+    face_toward(roof, cav)
+    parts.add("black", roof, smooth=60)
+    rows = []
+    for k in range(25):
+        y = -0.315 + 0.63 * k / 24
+        rows.append([top_pt(x - 0.002, y)[0] + Vector((0, 0, 0.0012)), top_pt(x - 0.136, y)[0] + Vector((0, 0, 0.0012))])
+    floor = grid_surface(rows)
+    face_toward(floor, cav)
+    parts.add("black", floor, smooth=40)
     bm = bmesh.new()
-    bm.faces.new([bm.verts.new(p) for p in vs])
-    parts.add("black", bm)
+    bm.faces.new([bm.verts.new(p) for p in deep])
+    face_toward(bm, cav)
+    parts.add("mesh", bm)
 
 
 def cowl_and_wipers(parts):
@@ -372,18 +472,39 @@ def cowl_and_wipers(parts):
 
 
 # --- mirrors, handles, markers ---------------------------------------------------------------------------
+def mirror_pod(n=28, k=10):
+    """Mirror housing lofted along its span (local +y = outboard): superellipse sections (crisp but rounded),
+    a flat back for the glass at x = -0.026, a fuller front, slightly taller at the outer end, ends rounded off."""
+    rows = []
+    vs = [math.sin(0.5 * math.pi * i / k) for i in range(-k, k + 1)]
+    for v in vs:
+        sc = (1.0 - min(abs(v), 0.9995) ** 4) ** 0.25
+        y = 0.0875 * v
+        a = (0.054 - 0.010 * v) * sc
+        b = (0.044 + 0.005 * v) * sc
+        row = []
+        for j in range(n):
+            th = 2 * math.pi * j / n
+            c, s_ = math.cos(th), math.sin(th)
+            x = a * math.copysign(abs(c) ** (2 / 2.6), c)
+            z = b * math.copysign(abs(s_) ** (2 / 2.6), s_)
+            row.append(Vector((max(x, -0.026 * sc), y, z + 0.002 * v)))
+        rows.append(row)
+    bm = grid_surface(rows, closed_v=True)
+    for r in (rows[0], rows[-1]):
+        bm.faces.new([bm.verts.new(p) for p in r])
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
 def mirrors(parts):
-    pod = sti_body.hull_of_spheres([((0.0, 0.0, 0.0), 0.050), ((0.0, 0.072, 0.006), 0.045),
-                                    ((0.0, -0.068, -0.004), 0.043), ((0.022, 0.004, 0.0), 0.046)], seg=20)
-    for v in pod.verts:
-        if v.co.x < -0.024:
-            v.co.x = -0.024
-    pod = subsurf_bm(pod, 1)
+    pod = mirror_pod()
     M = Matrix.Translation((0.668, 0.955, 1.052 + G)) @ Matrix.Rotation(math.radians(-7), 4, "Z")
     both(parts, "paint", transformed(pod, M), smooth=60)
-    glass = rounded_box((0.004, 0.150, 0.080), (-0.024, 0.002, 0.001), 2, 0.3)
+    glass = rounded_box((0.004, 0.150, 0.080), (-0.0285, 0.002, 0.001), 2, 0.3)
     both(parts, "chrome", transformed(glass, M), smooth=60)
-    rim = rounded_box((0.006, 0.160, 0.090), (-0.022, 0.002, 0.001), 2, 0.3)
+    rim = rounded_box((0.006, 0.160, 0.090), (-0.026, 0.002, 0.001), 2, 0.3)
     both(parts, "black", transformed(rim, M), smooth=60)
     # sail (triangle base on the door) + arm
     sail = rounded_box((0.13, 0.026, 0.062), (0.0, 0.0, 0.0), 2, 0.3)
@@ -492,13 +613,33 @@ def wing(parts):
         if loc is not None:
             foot = rounded_box((0.255, 0.040, 0.010), (0, 0, 0), 2, 0.35)
             parts.add("black", transformed(foot, Matrix.Translation(loc + Vector((0.0, 0, 0.002)))), smooth=50)
+            # stand base: two chrome bolt heads on the gasket
+            for bx in (-1.885, -2.035):
+                b = lathe([(0.0001, 0.0035), (0.0050, 0.0030), (0.0058, 0.0)], 6)
+                parts.add("chrome", transformed(b, Matrix.Translation(Vector((bx, yy, loc.z + 0.007)))
+                                                @ frame(Vector((0, 0, 1)))), smooth=20)
+        # end-plate bolts: the main plane is bolted through each upright (two hex heads on the outer face)
+        tz = 0.85
+        xle = -1.850 + 0.058 * tz ** 0.7 - 0.085 * tz ** 7
+        xte = -2.085 + 0.022 * tz + 0.035 * tz ** 7
+        for bx, bz in ((-1.898, 0.010), (-1.965, 0.022)):
+            b_ = (xle - bx) / (xle - xte)
+            half = 5 * 0.022 * (0.2969 * math.sqrt(b_) - 0.126 * b_ - 0.3516 * b_ ** 2 + 0.2843 * b_ ** 3
+                                - 0.1036 * b_ ** 4)
+            head = lathe([(0.0001, 0.0030), (0.0048, 0.0026), (0.0056, 0.0)], 6)
+            parts.add("chrome", transformed(head, Matrix.Translation(Vector((bx, yy + side * (half - 0.0004),
+                                                                             H_LE + G + bz)))
+                                            @ frame(Vector((0, side, 0)))), smooth=20)
+
+
+EXH_Y = -0.36       # single tip under the right-hand side of the rear bumper (y < 0 = car right)
 
 
 def exhaust(parts):
-    loc, n = rear_pt(0.36, 0.30)
+    loc, n = rear_pt(EXH_Y, 0.30)
     x_end = (loc.x if loc is not None else -2.18) - 0.035
     axis = Vector((-1, 0.0, -0.05)).normalized()
-    M = Matrix.Translation((x_end, 0.36, 0.268 + G)) @ frame(axis)
+    M = Matrix.Translation((x_end, EXH_Y, 0.268 + G)) @ frame(axis)
     r = 0.050
     tip = lathe([(r - 0.006, -0.20), (r - 0.006, -0.004), (r - 0.003, 0.0), (r, -0.004), (r, -0.16),
                  (r - 0.012, -0.22)], 64)
@@ -515,28 +656,40 @@ def rear_reflectors(parts):
         loc, n = rear_pt(side * 0.70, 0.43)
         if loc is None:
             continue
-        r = rounded_box((0.012, 0.11, 0.028), (0, 0, 0), 2, 0.4)
         axis = Vector((n.x, n.y, 0)).normalized()
         R = Matrix.Rotation(math.atan2(axis.y, axis.x) - math.pi, 4, "Z")
-        parts.add("red", transformed(r, Matrix.Translation(loc - axis * 0.002) @ R), smooth=50)
+        M = Matrix.Translation(loc - axis * 0.002) @ R
+        parts.add("red", transformed(rounded_box((0.012, 0.11, 0.028), (0, 0, 0), 2, 0.4), M), smooth=50)
+        parts.add("chrome", transformed(facet(rounded_box((0.007, 0.100, 0.020), (0.001, 0, 0), 1, 0.3), 0.0006),
+                                        M), smooth=4)
+        parts.add("black", transformed(rounded_box((0.008, 0.124, 0.040), (0.004, 0, 0), 2, 0.4), M), smooth=50)
 
 
 def rear_valance(parts):
-    pts = []
-    for k in range(41):
-        a = math.radians(180 - 60 + 120 * k / 40)
-        o = Vector((-1.72, 0, 0.300 + G))
-        d = Vector((math.cos(a), math.sin(a), 0))
-        loc, n = hit(o + d * 1.5, -d)
-        if loc is not None:
-            pts.append((loc, d))
+    """Lower rear bumper section: a black grained valance wrapping the bumper's lower third (it breaks the
+    painted slab), standing 6-9 mm proud with a crisp top lip, tucking under the bumper; diffuser fins below."""
+    hs = (0.385, 0.375, 0.350, 0.320, 0.292, 0.268)     # profile heights (top lip .. under the bumper)
     sec = []
-    for loc, d in pts:
-        base = Vector((loc.x, loc.y, 0.0))
-        sec.append([base - d * 0.04 + Vector((0, 0, 0.262 + G)), base + d * 0.004 + Vector((0, 0, 0.262 + G)),
-                    base + d * 0.012 + Vector((0, 0, 0.300 + G)), base + d * 0.004 + Vector((0, 0, 0.345 + G)),
-                    base - d * 0.02 + Vector((0, 0, 0.350 + G))])
-    parts.add("black", grid_surface(sec), smooth=40)
+    for k in range(49):
+        a = math.radians(180 - 58 + 116 * k / 48)
+        d = Vector((math.cos(a), math.sin(a), 0))
+        row = []
+        for j, h in enumerate(hs):
+            o = Vector((-1.72, 0, h + G))
+            loc, n = hit(o + d * 1.5, -d)
+            if loc is None:
+                break
+            out = (0.0005, 0.009, 0.008, 0.007, 0.006, 0.004)[j]
+            row.append(loc + d * out)
+        if len(row) == len(hs):
+            base = row[-1]
+            row.append(base - d * 0.045 + Vector((0, 0, -0.012)))    # return under the bumper
+            sec.append(row)
+    bm = grid_surface(sec)
+    bm.normal_update()
+    if sum(f.normal.dot(f.calc_center_median() - Vector((-1.6, 0, 0.3 + G))) for f in bm.faces) < 0:
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    parts.add("black", bm, smooth=35)
 
 
 def antenna(parts):
@@ -618,7 +771,11 @@ def plates(parts):
     loc, n = rear_pt(0.0, 0.515)
     if loc is not None:
         x_back = loc.x + 0.021
-        plate_assembly(parts, Vector((x_back - 0.007, 0.0, 0.515 + G)), (-1, 0, 0), lamp=True)
+        plate_assembly(parts, Vector((x_back - 0.007, 0.0, 0.515 + G)), (-1, 0, 0), lamp=False)
+        # plate lamps: two housings tucked into the roof of the recess, lenses facing down onto the plate
+        for yl in (-0.095, 0.095):
+            parts.add("black", rounded_box((0.016, 0.060, 0.010), (loc.x + 0.009, yl, 0.600 + G), 2, 0.35), smooth=40)
+            parts.add("lens", rounded_box((0.010, 0.046, 0.003), (loc.x + 0.009, yl, 0.5945 + G), 2, 0.4), smooth=40)
     # front: on the bar across the lower intake
     loc, n = front_pt(0.0, 0.405)
     if loc is not None:
@@ -633,38 +790,44 @@ def plate_recess_back(parts):
     pts = sti_body.rounded_rect(-0.29, 0.415, 0.29, 0.615, 0.035)
     bm = bmesh.new()
     f = bm.faces.new([bm.verts.new((x, y, h + G)) for y, h in pts])
-    if f.normal.x > 0:
-        f.normal_flip()
-    parts.add("black", bm)
-
-
-def liners_and_floor(parts):
-    for xa, r in sti_body.ARCH_R.items():
-        prof = [(r + 0.052, 0.86), (r + 0.052, 0.42)]
-        liner = lathe(prof, 48, a0=math.radians(-6), a1=math.radians(186))
-        wall = lathe([(r + 0.052, 0.42), (0.06, 0.42)], 48, a0=math.radians(-6), a1=math.radians(186))
-        merge(liner, wall)
-        bmesh.ops.recalc_face_normals(liner, faces=liner.faces)
-        # normals must face the wheel (inward): flip if the top faces point up
-        top = max(liner.faces, key=lambda f: f.calc_center_median().z)
-        if top.normal.z > 0:
-            bmesh.ops.reverse_faces(liner, faces=liner.faces)
-        M = Matrix.Translation((xa, 0, sti_body.ARCH_ZC))
-        both(parts, "black", transformed(liner, M), smooth=50)
-    # under-tray
-    pts = []
-    for k in range(64):
-        a = 2 * math.pi * k / 64
-        cx, cy = math.cos(a), math.sin(a)
-        x = math.copysign(abs(cx) ** 0.25, cx) * (1.98 if cx > 0 else 1.94)
-        y = math.copysign(abs(cy) ** 0.25, cy) * 0.57
-        pts.append(Vector((x - (0.02 if cx < 0 else 0), y, 0.188 + G)))
-    bm = bmesh.new()
-    f = bm.faces.new([bm.verts.new(p) for p in pts])
-    if f.normal.z > 0:
+    f.normal_update()             # (a new face's normal is not computed yet)
+    if f.normal.x > 0:            # face the viewer behind the car
         f.normal_flip()
     bmesh.ops.triangulate(bm, faces=bm.faces[:])
-    parts.add("black", bm)
+    parts.add("paint", bm)        # a painted recess (body colour, like the bumper)
+
+
+def rear_emblem(parts):
+    """Subaru oval (chrome ring, dark field, six chrome stars) on the boot lid, and the boot-lid key barrel."""
+    loc, n = rear_pt(0.0, 0.865)
+    if loc is None:
+        return
+    out = Vector((-1, 0, 0))
+    c = loc + out * 0.004
+    M = Matrix.Translation(c) @ frame(out) @ Matrix.Diagonal((1.0, 1.0, 0.62, 1.0))
+    parts.add("chrome", transformed(ring(0.044, 0.053, 0.004, 0.010), M), smooth=30)
+    parts.add("mesh", transformed(lathe([(0.0001, 0.0), (0.045, 0.0), (0.045, -0.008)], 48), M), smooth=30)
+    stars = bmesh.new()
+    for (sy, sz, r) in ((-0.021, 0.006, 0.012), (0.004, 0.015, 0.0055), (0.015, 0.008, 0.0055),
+                        (0.006, -0.002, 0.0055), (0.023, -0.004, 0.0055), (0.011, -0.013, 0.0055)):
+        pts = []
+        for k in range(8):
+            rr = r if k % 2 == 0 else r * 0.3
+            a = math.pi / 4 * k
+            # seen from behind the car the viewer's left is +y: the big star sits there
+            pts.append(c + out * 0.0015 + Vector((0.0, -sy + rr * math.cos(a), sz + rr * math.sin(a))))
+        f = stars.faces.new([stars.verts.new(p) for p in pts])
+        f.normal_update()
+        if f.normal.dot(out) < 0:
+            f.normal_flip()
+    parts.add("chrome", stars)
+    # key barrel just above the bumper line
+    loc, n = rear_pt(0.0, 0.760)
+    if loc is not None:
+        M = Matrix.Translation(loc + out * 0.001) @ frame(out)
+        parts.add("chrome", transformed(lathe([(0.0001, 0.003), (0.006, 0.0026), (0.008, 0.001), (0.0085, -0.003)], 24),
+                                        M), smooth=40)
+        parts.add("black", transformed(rounded_box((0.0016, 0.0016, 0.010), (0, 0.0038, 0), 1, 0.3), M), smooth=40)
 
 
 def underbody(parts):
@@ -676,7 +839,7 @@ def underbody(parts):
     from sti_driver import tube
     parts.add(U, tube([(0.50, 0.0, 0.245 + G), (-1.05, 0.0, 0.262 + G)], [0.034, 0.034], 12), smooth=40)
     parts.add(U, rounded_box((0.26, 0.30, 0.17), (-1.235, 0.0, 0.285 + G), 2, 0.35), smooth=40)     # rear diff
-    parts.add(U, rounded_box((0.60, 1.00, 0.11), (-0.80, 0.0, 0.255 + G), 2, 0.25), smooth=40)      # fuel tank
+    parts.add(U, rounded_box((0.56, 0.84, 0.11), (-0.78, 0.0, 0.255 + G), 2, 0.25), smooth=40)      # fuel tank
     for side in (1, -1):
         # lower arms and drive shafts toward the hubs (stop short of the wheel planes)
         for xa, h in ((1.2915, 0.215), (-1.2335, 0.235)):
@@ -685,10 +848,10 @@ def underbody(parts):
             parts.add(U, tube([(xa, side * 0.12, 0.25 + G), (xa, side * 0.60, 0.231 + G)], [0.022, 0.022], 10),
                       smooth=40)
     # exhaust: front pipe -> centre pipe -> silencer -> tail pipe to the tip
-    pipe = [(1.45, 0.10, 0.215), (0.90, 0.13, 0.205), (-0.40, 0.16, 0.205), (-1.00, 0.24, 0.212),
-            (-1.55, 0.30, 0.220), (-1.66, 0.33, 0.225)]
+    pipe = [(1.45, -0.10, 0.215), (0.90, -0.13, 0.205), (-0.40, -0.16, 0.205), (-1.00, -0.24, 0.212),
+            (-1.55, -0.30, 0.220), (-1.66, -0.33, 0.225)]
     parts.add(U, tube([(x, y, h + G) for x, y, h in pipe], [0.026] * len(pipe), 12), smooth=40)
-    parts.add(U, rounded_box((0.40, 0.34, 0.13), (-1.88, 0.28, 0.258 + G), 2, 0.4), smooth=40)      # silencer
+    parts.add(U, rounded_box((0.40, 0.34, 0.13), (-1.88, -0.28, 0.258 + G), 2, 0.4), smooth=40)     # silencer
 
 
 def intake_and_skirts(parts):
@@ -718,24 +881,20 @@ def intake_and_skirts(parts):
         if sum(f.normal.y * side for f in bm.faces) < 0:
             bmesh.ops.reverse_faces(bm, faces=bm.faces)
         parts.add("black", bm, smooth=40)
-    # diffuser strakes under the rear bumper
-    for y in (-0.42, -0.14, 0.14, 0.42):
+    # diffuser: fins under the rear bumper (clear of the exhaust tip on the right)
+    for y in (-0.54, -0.09, 0.05, 0.19, 0.33, 0.47):
         loc, n = rear_pt(y, 0.30)
-        x = (loc.x if loc is not None else -2.18) + 0.03
-        fin = rounded_box((0.22, 0.008, 0.07), (x + 0.10, y, 0.262 + G), 2, 0.3)
+        x = (loc.x if loc is not None else -2.18) + 0.025
+        fin = rounded_box((0.26, 0.008, 0.075), (x + 0.12, y, 0.255 + G), 2, 0.3)
         parts.add("black", fin, smooth=40)
 
 
 def scoop_slats(parts):
-    """Three horizontal slats in the hood-scoop mouth."""
+    """Three horizontal slats in the hood-scoop mouth (closed blades, seen from both sides)."""
     for k, dz in enumerate((0.018, 0.034, 0.050)):
-        rows = []
-        for j in range(13):
-            y = -0.27 + 0.54 * j / 12
-            loc, n = top_pt(1.50, y)
-            z = (loc.z if loc is not None else 0.95 + G) + dz
-            rows.append([Vector((1.535, y, z + 0.003)), Vector((1.555, y, z)), Vector((1.535, y, z - 0.003))])
-        parts.add("black", grid_surface(rows), smooth=40)
+        loc, n = top_pt(1.50, 0.0)
+        z = (loc.z if loc is not None else 0.95 + G) + dz
+        parts.add("black", rounded_box((0.022, 0.54, 0.006), (1.543, 0.0, z), 2, 0.3), smooth=40)
 
 
 def wiper_caps(parts):
@@ -773,6 +932,8 @@ def wing_brake_light(parts):
     te_z = H_LE + G - chord * math.sin(aoa)
     bm = rounded_box((0.005, 0.24, 0.013), (te_x + 0.0005, 0.0, te_z + 0.008), 2, 0.4)
     parts.add("red", bm, smooth=40)
+    parts.add("chrome", facet(rounded_box((0.003, 0.226, 0.009), (te_x + 0.0012, 0.0, te_z + 0.008), 1, 0.3),
+                              0.0004), smooth=4)
 
 
 def build(parts, bvh, patches):
@@ -790,10 +951,10 @@ def build(parts, bvh, patches):
     exhaust(parts)
     plate_recess_back(parts)
     plates(parts)
+    rear_emblem(parts)
     antenna(parts)
     rear_reflectors(parts)
     rear_valance(parts)
-    liners_and_floor(parts)
     underbody(parts)
     intake_and_skirts(parts)
     scoop_slats(parts)

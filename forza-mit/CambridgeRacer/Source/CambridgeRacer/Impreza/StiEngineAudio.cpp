@@ -24,6 +24,8 @@ namespace
 	constexpr float LoadCurve = 0.75f;        // on/off gains: Load^0.75 / (1-Load)^0.75 (partly coherent pair)
 	constexpr float RelockGain = 0.15f;       // silent loops: pitch nudge per cycle of phase error
 	constexpr float LaunchRpm = 4000.0f;      // AImprezaSTi::ClutchSlipRPM (clutch slip at launch)
+	constexpr float ReverseLaunchRpm = 2200.0f; // AImprezaSTi::ReverseSlipRPM
+	constexpr float EngineLoopGain = 1.1f;    // engine loops +0.8 dB over the turbo / tyres (2026-10-26: "very slightly" louder)
 	constexpr float LimiterRpm = 7900.0f;     // Chaos MaxRPM is 8000
 	constexpr float LimiterHz = 14.0f;        // fuel-cut bounce rate
 	constexpr float ShiftRpmFall = 4000.0f;   // rpm/s the engine falls with the clutch in
@@ -169,16 +171,12 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 	const double Now = GetWorld()->GetTimeSeconds();
 	const int32 Gear = Move->GetCurrentGear();
 	const int32 TargetGear = Move->GetTargetGear();
-	// the pedal that drives the car. Keyboard / gamepad reverse (Chaos bReverseAsBrake): the brake key drives and the raw
-	// throttle stays 0, so reverse used to play the overrun loops (quiet, dark, popping) under a full-boost whistle
-	// (AImprezaSTi::UpdateEngine spools the turbo from the brake key there). Same rule as UpdateEngine.
-	float Throttle = Move->GetThrottleInput();
-	if (Gear < 0 && Move->bReverseAsBrake)
-	{
-		Throttle = FMath::Max(Throttle, Move->GetBrakeInput());
-	}
-	Throttle = FMath::Clamp(Throttle, 0.0f, 1.0f);
-	const float Boost = Car->GetBoost();
+	// the throttle the engine gets (AImprezaSTi::UpdateEngine: after traction control; in keyboard / gamepad reverse the
+	// brake key, which drives the car there) sets the load. Lift-off events (blow-off, crackle) follow the driver's own
+	// pedal: a traction-control cut is not a lift-off and must not dump the boost
+	const float Throttle = FMath::Clamp(Car->GetEngineThrottle(), 0.0f, 1.0f);
+	const float Pedal = FMath::Clamp(Car->GetDriverPedal(), 0.0f, 1.0f);
+	const float Boost = Car->GetBoost();   // pressure: no boost off the rpm band or in reverse
 
 	// --- crank lock: integrate each loop's phase error over the last tick (pitch it actually played at)
 	for (int32 i = 0; i < Rpms.Num(); ++i)
@@ -188,10 +186,11 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 
 	// --- engine rpm as heard
 	float Rpm = Move->GetEngineRotationSpeed();
-	// launch: Chaos ties the engine to the wheels; the car slips the clutch up to LaunchRpm in 1st/reverse
-	if ((Gear == 1 || Gear == -1) && Rpm < LaunchRpm && Throttle > 0.05f)
+	// launch: Chaos ties the engine to the wheels; the car slips the clutch up to LaunchRpm in 1st (less in reverse)
+	const float SlipRpm = Gear < 0 ? ReverseLaunchRpm : LaunchRpm;
+	if ((Gear == 1 || Gear == -1) && Rpm < SlipRpm && Throttle > 0.05f)
 	{
-		Rpm = FMath::Lerp(Rpm, LaunchRpm, Throttle);
+		Rpm = FMath::Lerp(Rpm, SlipRpm, Throttle);
 	}
 	// gear change: Chaos sits in neutral (gear 0) for GearChangeTime; the engine falls with the clutch in
 	const bool bShifting = Gear == 0 && TargetGear != 0;
@@ -217,10 +216,15 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 	{
 		LastDriveGear = Gear;
 	}
-	// rev limiter: fuel-cut bounce
+	// rev limiter: fuel-cut bounce, in whole frames (a 14 Hz square wave sampled at 30 fps came out irregular), the
+	// half period set when it engages (recomputed every frame it flipped between 1 and 2 frames around 42 fps)
 	const bool bLimiter = Rpm >= LimiterRpm && Throttle > 0.5f;
-	LimiterClock = bLimiter ? LimiterClock + DeltaTime : 0.0f;
-	const bool bCut = bLimiter && FMath::Frac(LimiterClock * LimiterHz) < 0.5f;
+	LimiterFrames = bLimiter ? LimiterFrames + 1 : 0;
+	if (LimiterFrames == 1)
+	{
+		LimiterHalfFrames = FMath::Max(1, FMath::RoundToInt(0.5f / (LimiterHz * DeltaTime)));
+	}
+	const bool bCut = bLimiter && (LimiterFrames - 1) / LimiterHalfFrames % 2 == 0;
 	if (bCut)
 	{
 		Rpm -= 250.0f;
@@ -262,15 +266,15 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 		}
 		Pitch = FMath::Clamp(Pitch, MinPitch, MaxPitch);
 		VoicePitch[i] = Pitch;
-		OnVoices[i]->SetVolumeMultiplier(Gain * Weight * OnGain);
-		OffVoices[i]->SetVolumeMultiplier(Gain * Weight * OffGain);
+		OnVoices[i]->SetVolumeMultiplier(Gain * EngineLoopGain * Weight * OnGain);
+		OffVoices[i]->SetVolumeMultiplier(Gain * EngineLoopGain * Weight * OffGain);
 		OnVoices[i]->SetPitchMultiplier(Pitch);
 		OffVoices[i]->SetPitchMultiplier(Pitch);
 	}
 	LockRpm = SmoothRpm;
 
 	// --- overrun pops: a burst after lifting off at revs, then the odd one while coasting
-	if (PrevThrottle > 0.5f && Throttle < 0.2f && SmoothRpm > 3000.0f)
+	if (PrevPedal > 0.5f && Pedal < 0.2f && SmoothRpm > 3000.0f)
 	{
 		CrackleEnergy = 1.0f;
 	}
@@ -293,14 +297,14 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 		Whistle->SetVolumeMultiplier(Gain * WhistleVolume * WhistleRpmGain * Boost * Boost * (0.3f + 0.7f * Throttle));
 		Whistle->SetPitchMultiplier(0.75f + 0.45f * Boost + 0.1f * SmoothRpm / 8000.0f);
 	}
-	if (BlowOff && PrevThrottle > 0.6f && Throttle < 0.2f && Boost > 0.45f && Now - LastBlowOff > 0.8)
+	if (BlowOff && PrevPedal > 0.6f && Pedal < 0.2f && Boost > 0.45f && Now - LastBlowOff > 0.8)
 	{
 		LastBlowOff = Now;
 		BlowOff->SetVolumeMultiplier(Gain * BlowOffVolume * Boost);
 		BlowOff->SetPitchMultiplier(FMath::FRandRange(0.92f, 1.08f));
 		BlowOff->Play();
 	}
-	PrevThrottle = Throttle;
+	PrevPedal = Pedal;
 
 	// --- tyres: body slip angle (sliding) and wheelspin
 	if (Squeal)

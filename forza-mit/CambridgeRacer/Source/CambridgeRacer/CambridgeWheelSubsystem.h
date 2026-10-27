@@ -109,7 +109,7 @@ private:
 	FString FindPort();
 	void ParseLine(const char* Line);
 	void Write(const FString& Text);
-	bool ConsumeEdge(bool& bEdge, double EdgeTime);
+	bool ConsumeEdge(bool& bEdge, const double& EdgeTime);   // (the time by reference: read under the lock)
 
 	FRunnableThread* Thread = nullptr;
 	TAtomic<bool> bStopping { false };

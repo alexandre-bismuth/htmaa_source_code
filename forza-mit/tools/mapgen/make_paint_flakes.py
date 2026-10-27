@@ -37,3 +37,26 @@ out = Path(__file__).resolve().parents[2] / "data/processed/common/car"
 out.mkdir(parents=True, exist_ok=True)
 Image.fromarray(img).save(out / "paint_flakes_normal.png")
 print("ok", img.shape, "flakes", len(sites), "coverage", float((d <= radius[idx]).mean()))
+
+# --- orange peel: the clear coat's very subtle micro-waviness (tileable, periodic by FFT filtering) -----------
+# Band-limited noise (wavelength ~25-60 px on the 512 tile; the car material tiles it ~60x per 5 m UV unit, so
+# ~2-5 mm bumps), turned into a weak normal map. Same OpenGL/DirectX remark as above (isotropic noise).
+rng2 = np.random.default_rng(23)
+white = rng2.standard_normal((N, N))
+fy = np.fft.fftfreq(N)[:, None]
+fx = np.fft.fftfreq(N)[None, :]
+f = np.sqrt(fx * fx + fy * fy)
+band = np.exp(-((f - 1 / 40.0) / (1 / 80.0)) ** 2)            # peak at a 40 px wavelength
+h = np.real(np.fft.ifft2(np.fft.fft2(white) * band))
+h /= np.abs(h).max()
+gy, gx = np.gradient(h)
+# wrap-around gradient at the tile edges (periodic)
+gx[:, 0] = (h[:, 1] - h[:, -1]) / 2
+gx[:, -1] = (h[:, 0] - h[:, -2]) / 2
+gy[0, :] = (h[1, :] - h[-1, :]) / 2
+gy[-1, :] = (h[0, :] - h[-2, :]) / 2
+k = 6.0                                                         # max tilt ~ a few degrees before the shader's scale
+nrm = np.stack([-gx * k, gy * k, np.ones_like(h)], -1)
+nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
+Image.fromarray(((nrm * 0.5 + 0.5) * 255 + 0.5).astype(np.uint8)).save(out / "paint_orangepeel_normal.png")
+print("ok orange peel", nrm.shape, "max tilt deg", float(np.degrees(np.arccos(nrm[..., 2].min()))))

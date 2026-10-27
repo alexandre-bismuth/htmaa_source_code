@@ -1,8 +1,10 @@
 """Wheel parts, modelled at the origin with the axle along Y and the outer face toward +Y.
 
 tire    225/45R17 (R 0.317 m): sidewall bulge, rim protector, 4 circumferential grooves, shoulder blocks
-rim     gold 17x8" ET53, 5 twin-spoke (10 spokes), concave face, lip, barrel, hub, centre cap
-brake   294 mm vented, drilled + slotted disc with a bell (spins with the wheel)
+rim     gold 17x8" ET53, 5 twin-spoke (10 spokes), ~4 cm concave dish (caliper shaped to clear it), lip, barrel,
+        hub, centre cap
+brake   294 mm ventilated disc (two friction plates + 36 radial vanes), drilled + slotted, with a bell (spins with
+        the wheel); lug nuts
 caliper gold four-pot Brembo-style caliper at the trailing side (wheel-local, must not spin)
 """
 import math
@@ -90,13 +92,24 @@ def tyre(pitches=56):
 
 # --- rim -------------------------------------------------------------------------------------------------
 def y_face(r):
-    """Concave spoke face: hub recessed, rim edge outboard."""
+    """Concave spoke face: hub recessed, rim edge outboard - a ~4 cm dish (y 0.063 at the hub -> 0.103 at the lip).
+    The caliper is shaped to this (CAL_FACE: its outer half follows the spoke backs), see clearance()."""
     t = max(0.0, (r - 0.07) / (0.205 - 0.07))
     return Y_MOUNT + 0.010 + 0.040 * t ** 1.6
 
 
-def rounded_trapezoid(wf, wb, d, rc, n=4):
-    """Closed CCW outline: flat front face (width wf at +d/2), narrower back (wb at -d/2), rounded corners."""
+SPOKE_R0, SPOKE_R1, SPOKE_D0, SPOKE_D1 = 0.068, 0.210, 0.030, 0.022
+
+
+def spoke_back(r):
+    """y of the spoke's back (inboard) face at radius r."""
+    t = (r - SPOKE_R0) / (SPOKE_R1 - SPOKE_R0)
+    return y_face(r) - (SPOKE_D0 + (SPOKE_D1 - SPOKE_D0) * t)
+
+
+def rounded_trapezoid(wf, wb, d, rc, n=4, ridge=0.0):
+    """Closed CCW outline: front face (width wf at +d/2, crowned by `ridge` in the middle), narrower back
+    (wb at -d/2), rounded corners."""
     corners = [(wf / 2 - rc, d / 2 - rc), (-wf / 2 + rc, d / 2 - rc), (-wb / 2 + rc, -d / 2 + rc), (wb / 2 - rc, -d / 2 + rc)]
     pts = []
     m = len(corners)
@@ -111,10 +124,12 @@ def rounded_trapezoid(wf, wb, d, rc, n=4):
         for k in range(n + 1):
             a = a0 + (a1 - a0) * k / n
             pts.append((p1[0] + rc * math.cos(a), p1[1] + rc * math.sin(a)))
+        if i == 0:
+            pts.append((0.0, d / 2 + ridge))         # front crown (catches a highlight along the spoke)
     return pts
 
 
-def spoke(angle, r0=0.068, r1=0.210, w0=0.036, w1=0.031, d0=0.036, d1=0.024, nr=16, ns=16):
+def spoke(angle, r0=SPOKE_R0, r1=SPOKE_R1, w0=0.041, w1=0.035, d0=SPOKE_D0, d1=SPOKE_D1, nr=16, ns=16):
     """Lofted spoke from the hub to the rim along direction `angle` (in the xz plane), rounded section."""
     secs = []
     for i in range(nr + 1):
@@ -123,7 +138,7 @@ def spoke(angle, r0=0.068, r1=0.210, w0=0.036, w1=0.031, d0=0.036, d1=0.024, nr=
         w = w0 + (w1 - w0) * t + 0.016 * math.exp(-((t - 1.0) / 0.10) ** 2)   # flare into the rim
         d = d0 + (d1 - d0) * t
         yc = y_face(r) - d / 2
-        sec = [(r, cx, yc + cy) for cx, cy in rounded_trapezoid(w, 0.50 * w, d, 0.0045)]
+        sec = [(r, cx, yc + cy) for cx, cy in rounded_trapezoid(w, 0.50 * w, d, 0.0045, ridge=0.0035)]
         secs.append(sec)
     ca, sa = math.cos(angle), math.sin(angle)
     P = []
@@ -173,10 +188,32 @@ def centre_cap_and_nuts():
 
 
 # --- brakes ----------------------------------------------------------------------------------------------
+VENT = (0.0135, 0.0225)      # the ventilation gap between the two friction plates (disc y 0.004..0.032)
+# caliper outer face y by radius: follows the dish (spoke backs) with >= 6 mm clearance, so the outer half is a
+# wedge - slim at the inner radius, full depth at the bridge - instead of making the spokes shallow
+CAL_FACE = [(0.122, 0.034), (0.128, 0.040), (0.150, 0.048), (0.166, 0.054), (0.176, 0.056), (0.181, 0.050)]
+CAL_A = (150.0, 212.0)       # caliper arc (deg, xz plane): trailing side
+
+
+def clearance():
+    """Smallest gap (m) between the caliper's outer face and the spoke backs over the caliper's radius."""
+    gaps = []
+    for (r0, y0), (r1, y1) in zip(CAL_FACE[:-1], CAL_FACE[1:]):
+        for k in range(11):
+            r = r0 + (r1 - r0) * k / 10
+            gaps.append(spoke_back(r) - (y0 + (y1 - y0) * k / 10))
+    return min(gaps)
+
+
 def disc():
+    """294 mm ventilated disc: outer and inner friction plates (the vanes are added after the drilling)."""
     ro, ri, y0, y1 = 0.147, 0.088, 0.004, 0.032
-    prof = [(ri, y1), (ro - 0.002, y1), (ro, y1 - 0.002), (ro, y0 + 0.002), (ro - 0.002, y0), (ri, y0), (ri, y1)]
-    bm = lathe(prof, 96)
+    g0, g1 = VENT
+    bm = bmesh.new()
+    for a, b in ((g1, y1), (y0, g0)):
+        merge(bm, lathe([(ri, b), (ro - 0.002, b), (ro, b - 0.002), (ro, a + 0.002), (ro - 0.002, a), (ri, a),
+                         (ri, b)], 96))
+    merge(bm, lathe([(ri, g0), (ri + 0.006, g0), (ri + 0.006, g1), (ri, g1), (ri, g0)], 96))   # inner web
     # bell / hat
     hat = lathe([(0.088, y1 - 0.004), (0.084, Y_MOUNT - 0.004), (0.080, Y_MOUNT), (0.034, Y_MOUNT),
                  (0.034, Y_MOUNT - 0.006), (0.078, Y_MOUNT - 0.008), (0.082, y1)], 64)
@@ -213,23 +250,56 @@ def disc_holes_and_slots():
     return cut
 
 
+def vanes(n=36):
+    """Radial cooling vanes in the gap between the friction plates (seen as dark slots at the disc edge)."""
+    bm = bmesh.new()
+    g0, g1 = VENT
+    for k in range(n):
+        a = 2 * math.pi * (k + 0.5) / n
+        b = bmesh.new()
+        bmesh.ops.create_cube(b, size=1.0)
+        bmesh.ops.scale(b, vec=(0.050, g1 - g0 + 0.001, 0.0045), verts=b.verts)
+        M = Matrix.Rotation(-a, 4, "Y") @ Matrix.Translation((0.1205, (g0 + g1) / 2, 0.0))
+        merge(bm, transformed(b, M))
+    return bm
+
+
 def caliper():
-    """Four-pot caliper body straddling the disc at the trailing side (angles in the xz plane)."""
-    a0, a1 = math.radians(150), math.radians(212)
-    yo, yi = 0.060, -0.026
-    prof = [(0.105, yi + 0.008), (0.105, yo - 0.008), (0.112, yo), (0.166, yo), (0.176, yo - 0.010),
-            (0.176, yi + 0.010), (0.166, yi), (0.112, yi), (0.105, yi + 0.008)]
+    """Four-pot caliper straddling the disc at the trailing side (angles in the xz plane): inner half, a wedge
+    outer half under the spoke backs (CAL_FACE), the bridge at the outer radius; plus bridge bolts and a raised
+    logo pad ('caliper_logo')."""
+    a0, a1 = (math.radians(a) for a in CAL_A)
+    yi = -0.026
+    prof = [(0.122, yi + 0.008)] + CAL_FACE + [(0.181, yi + 0.010), (0.170, yi), (0.128, yi), (0.122, yi + 0.008)]
     body = lathe(prof, 18, a0=a0, a1=a1)
-    # caps at both ends
     for a in (a0, a1):
         ca, sa = math.cos(a), math.sin(a)
         vs = [body.verts.new((r * ca, y, r * sa)) for r, y in prof[:-1]]
         body.faces.new(vs)
     bmesh.ops.remove_doubles(body, verts=body.verts, dist=1e-6)
     bmesh.ops.recalc_face_normals(body, faces=body.faces)
-    body = subsurf_bm(body, 1)
-    # slot window over the disc edge (dark) is implied by the gap between the two halves: add the pad slot
-    return body
+    return subsurf_bm(body, 1)
+
+
+def caliper_details():
+    """(bridge bolts, logo pad): two hex bolt heads on the outer face near the arc ends, and a raised pad in the
+    middle of the outer face (the caliper's logo field)."""
+    bolts = bmesh.new()
+    for adeg in (CAL_A[0] + 7, CAL_A[1] - 7):
+        a = math.radians(adeg)
+        r = 0.170
+        y = 0.0545
+        head = lathe([(0.0001, 0.0035), (0.0050, 0.0030), (0.0058, 0.0)], 6)
+        merge(bolts, transformed(head, Matrix.Translation((r * math.cos(a), y - 0.0008, r * math.sin(a)))))
+    a0, a1 = math.radians(167), math.radians(195)
+    lp = [(0.140, 0.0003), (0.1405, 0.0018), (0.1615, 0.0018), (0.162, 0.0003)]
+    def face_y(r):
+        for (r0, y0), (r1, y1) in zip(CAL_FACE[:-1], CAL_FACE[1:]):
+            if r0 <= r <= r1:
+                return y0 + (y1 - y0) * (r - r0) / (r1 - r0)
+        return CAL_FACE[-1][1]
+    logo = lathe([(r, face_y(r) - 0.0012 + dy) for r, dy in lp], 12, a0=a0, a1=a1)
+    return bolts, logo
 
 
 def sidewall_text(text, r_mid, a_mid, height=0.0135, raise_=0.0007):
@@ -276,6 +346,10 @@ def sidewall_text(text, r_mid, a_mid, height=0.0135, raise_=0.0007):
 
 
 def build(parts):
+    gap = clearance()
+    print(f"[sti_wheels] caliper outer face to spoke backs: min clearance {gap * 1000:.1f} mm "
+          f"({'OK' if gap >= 0.004 else 'TOO TIGHT'}); dish depth {(y_face(0.205) - y_face(0.07)) * 1000:.0f} mm",
+          flush=True)
     parts.add("tire", tyre(), smooth=40)
     # (no sidewall lettering: the game mirrors the wheel for the right side, text would read backwards)
     parts.add("rim", rim(), smooth=40)
@@ -294,7 +368,11 @@ def build(parts):
     remove(c)
     parts.add("brake", me, smooth=40)
     bpy.data.meshes.remove(me)
+    parts.add("brake", vanes(), smooth=40)
     parts.add("caliper", caliper(), smooth=50)
+    bolts, logo = caliper_details()
+    parts.add("caliper", bolts, smooth=20)
+    parts.add("caliper", logo, smooth=30)
 
 
 TIRE_UV = (0.222, 0.296)     # radius band of the outer sidewall mapped to V 0.25..1.0 of sti_tire_normal.png

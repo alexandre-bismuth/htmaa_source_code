@@ -203,13 +203,20 @@ void ARacingLineActor::UpdateFor(const FVector& CarLocation, float SpeedKmh, boo
 	for (const int32 c : Want)
 	{
 		FChunk& C = Chunks[c];
+		// uploaded only if a colour changed as the mesh stores it (8-bit sRGB): well under the target speeds the line is
+		// all green and only the sections with the fade in / out change as the car moves on
+		bool bChanged = false;
 		for (int32 k = 0; k < C.Count; ++k)
 		{
 			const FLinearColor Col = PointColour((C.First + k) % N, SpeedKmh, bCornersOnly);
+			bChanged |= Col.ToFColor(true) != C.Colours[2 * k].ToFColor(true);
 			C.Colours[2 * k] = Col;
 			C.Colours[2 * k + 1] = Col;
 		}
-		Mesh->UpdateMeshSection_LinearColor(c, C.Vertices, C.Normals, C.UVs, C.Colours, TArray<FProcMeshTangent>());
+		if (bChanged)
+		{
+			Mesh->UpdateMeshSection_LinearColor(c, C.Vertices, C.Normals, C.UVs, C.Colours, TArray<FProcMeshTangent>());
+		}
 		if (!Shown.Contains(c))
 		{
 			Mesh->SetMeshSectionVisible(c, true);

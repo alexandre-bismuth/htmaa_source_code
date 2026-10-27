@@ -57,6 +57,9 @@ namespace
 	constexpr double ResultsArmSeconds = 1.5;   // results window: Enter / A ignored this long after the finish
 	constexpr float StartMaxKmh = 40.0f;         // gamepad A (also the brake) only starts an event when slow
 	constexpr double RoadResetToastSeconds = 2.5;
+	constexpr float ResetBackCm = 500.0f;        // back on track: this far behind where the car got to along the line
+	constexpr float LostOffLineCm = 3000.0f;     // further off the line the car is lost: back on track from where it left it
+	constexpr float OnLineCm = 1000.0f;          // (the car counts as on the line within this, LastOnLineS)
 
 	// test: emulate long frames for the checkpoint logic (the car moves on, the gate test sees one long chord)
 	TAutoConsoleVariable<int32> CVarTestHitchFrames(TEXT("cr.TT.TestHitchFrames"), 0,
@@ -145,6 +148,7 @@ void UTimeTrialSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	FParse::Value(Cmd, TEXT("TimeTrialAutoDelay="), AutoDelay);
 	FParse::Value(Cmd, TEXT("TimeTrialAutoAfter="), AutoAfter, false);   // (no comma stop: a list of steps)
 	FParse::Value(Cmd, TEXT("TimeTrialAutoAfterDelay="), AutoAfterDelay);
+	FParse::Value(Cmd, TEXT("TimeTrialAutoResets="), AutoResetEvery);
 	bReady = true;
 }
 
@@ -170,7 +174,7 @@ void UTimeTrialSubsystem::PlayUISound(FName Name, float Volume) const
 	UE_LOG(LogTimeTrial, Verbose, TEXT("sound %s"), *Name.ToString());
 }
 
-void UTimeTrialSubsystem::ResetToLastGate()
+void UTimeTrialSubsystem::ResetToLastGate(bool bToGate)
 {
 	AImprezaSTi* Car = GetCar();
 	if (!Car || State != ETimeTrialState::Running || !Route.IsValidIndex(RouteIndex) || bResetHold)
@@ -178,9 +182,11 @@ void UTimeTrialSubsystem::ResetToLastGate()
 		return;
 	}
 	const FTimeTrialTrack& T = Tracks[Active];
-	// on the racing line (road centre) up to 15 m before the next gate, lined up with it. Only on the straight
-	// run into the gate: a gate just after a corner gets the car placed past the corner apex (on the line,
-	// which cuts across the junction, a point there faces diagonally into the kerb), at least 4 m before it.
+	// on the racing line (road centre) a little behind where the car got to along the route, never further on: a
+	// reset must not skip road (it used to land just before the next gate, so a crash right after a gate skipped
+	// ~100 m); a car lost far off the line goes back to where it left it. Only a car that missed the next gate (past it
+	// along the line) goes up to 15 m before that gate, lined up with it. Either way on a straight bit of the line: at a corner apex the line
+	// cuts across the junction and a point there faces diagonally into the kerb.
 	FVector At = T.StartLocation;
 	FRotator Rot(0.0f, T.StartYaw, 0.0f);
 	if (RouteIndex > 0 && LinePts.Num() >= 2)
@@ -189,28 +195,59 @@ void UTimeTrialSubsystem::ResetToLastGate()
 		const FVector2D GateDir(FMath::Cos(FMath::DegreesToRadians(G.Yaw)), FMath::Sin(FMath::DegreesToRadians(G.Yaw)));
 		const float GateS = RouteS[RouteIndex];
 		const float Floor = RouteS[RouteIndex - 1] + 100.0f;
+		const bool bLost = CarLineDist > LostOffLineCm;
+		const float CarS = bLost ? LastOnLineS : CarRouteS;
+		bToGate = bToGate || bMissed;
 		float S = FMath::Max(GateS - 400.0f, Floor);
 		FVector2D P, D;
-		for (float Back = 500.0f; Back <= 1500.0f && GateS - Back >= Floor; Back += 100.0f)
+		if (bToGate)
 		{
-			RoutePoint(GateS - Back, P, D);
-			if (FVector2D::DotProduct(D, GateDir) < 0.9f)     // the line bends more than ~25 deg away: corner
+			// the straight run into the gate: a gate just after a corner gets the car past the apex, at least 4 m before it
+			for (float Back = 500.0f; Back <= 1500.0f && GateS - Back >= Floor; Back += 100.0f)
 			{
-				break;
+				RoutePoint(GateS - Back, P, D);
+				if (FVector2D::DotProduct(D, GateDir) < 0.9f)     // the line bends more than ~25 deg away: corner
+				{
+					break;
+				}
+				S = GateS - Back;
 			}
-			S = GateS - Back;
+			Rot = FRotator(0.0f, G.Yaw, 0.0f);
+		}
+		else
+		{
+			// a run-up behind the car's progress (between the last gate and 4 m before the next), then further back while
+			// the line bends within the next 8 m
+			S = FMath::Clamp(CarS - ResetBackCm, Floor, S);
+			for (float Probe = S; Probe >= Floor; Probe -= 100.0f)
+			{
+				FVector2D P8, D8;
+				RoutePoint(Probe, P, D);
+				RoutePoint(Probe + 800.0f, P8, D8);
+				if (FVector2D::DotProduct(D, D8) >= 0.9f)
+				{
+					S = Probe;
+					break;
+				}
+			}
 		}
 		RoutePoint(S, P, D);
 		At = FVector(P.X, P.Y, 0.0);
-		Rot = FRotator(0.0f, G.Yaw, 0.0f);
-		CarRouteS = S;
-		// keep the run to the gate clear: a traffic-light pole or a bollard on the line (they stand in some
-		// junctions) would stop the car again right after the 3-2-1. Sweep a car-sized box from here to just
-		// past the gate (above kerb height, against what blocks the car) and slide sideways if it hits.
+		if (!bToGate)
 		{
-			const FVector Right = FRotator(0.0f, G.Yaw, 0.0f).Quaternion().GetRightVector();
-			const FVector Through = FVector(G.Location.X, G.Location.Y, 0.0) + Rot.Vector() * 300.0f;
-			const float Room = FMath::Max(G.Width * 0.5f - 150.0f, 0.0f);
+			Rot = FRotator(0.0f, float(FMath::RadiansToDegrees(FMath::Atan2(D.Y, D.X))), 0.0f);    // along the line
+		}
+		CarRouteS = S;
+		// keep the run ahead clear: a traffic-light pole or a bollard on the line (they stand in some junctions) would
+		// stop the car again right after the 3-2-1. Sweep a car-sized box from here (above kerb height, against what
+		// blocks the car) to just past the gate - from behind the car: 15 m on along the line's heading at most - and
+		// slide sideways if it hits.
+		{
+			const FVector Right = Rot.Quaternion().GetRightVector();
+			const FVector Through = bToGate ? FVector(G.Location.X, G.Location.Y, 0.0) + Rot.Vector() * 300.0f
+				: At + Rot.Vector() * FMath::Clamp(GateS + 300.0f - S, 300.0f, 1500.0f);
+			const float RoadWidth = bToGate ? G.Width : FMath::Min(G.Width, T.Gates[Route[RouteIndex - 1]].Width);
+			const float Room = FMath::Max(RoadWidth * 0.5f - 150.0f, 0.0f);
 			const ECollisionChannel Channel = Car->GetMesh()->GetCollisionObjectType();
 			FCollisionQueryParams Q(SCENE_QUERY_STAT(TimeTrialResetClear), false, Car);
 			const FCollisionShape Box = FCollisionShape::MakeBox(FVector(220.0f, 95.0f, 40.0f));
@@ -244,16 +281,23 @@ void UTimeTrialSubsystem::ResetToLastGate()
 		FCollisionQueryParams Q(SCENE_QUERY_STAT(TimeTrialReset), false, Car);
 		const bool bGround = GetWorld()->LineTraceSingleByChannel(Hit, At + FVector(0, 0, 300), At - FVector(0, 0, 800), ECC_Visibility, Q);
 		At.Z = bGround ? Hit.ImpactPoint.Z + 60.0 : 60.0;
-		UE_LOG(LogTimeTrial, Display, TEXT("back on track: %.0f m before checkpoint %d at (%.0f, %.0f, %.0f), ground %s"),
-			(GateS - S) / 100.0f, RouteIndex, At.X, At.Y, At.Z, bGround && Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("none"));
+		UE_LOG(LogTimeTrial, Display, TEXT("back on track: %.0f m before checkpoint %d at (%.0f, %.0f, %.0f), %.1f m %s the car's progress (%s, %.0f m off the line), ground %s"),
+			(GateS - S) / 100.0f, RouteIndex, At.X, At.Y, At.Z, FMath::Abs(CarS - S) / 100.0f, S <= CarS ? TEXT("behind") : TEXT("AHEAD OF"),
+			bToGate ? (bMissed ? TEXT("missed the gate") : TEXT("test autopilot")) : (bLost ? TEXT("lost: from where it left the line") : TEXT("on the route")), CarLineDist / 100.0f,
+			bGround && Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("none"));
 	}
 	Car->SetActorTransform(FTransform(Rot, At), false, nullptr, ETeleportType::TeleportPhysics);
 	Car->GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
 	Car->GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 	Car->SnapCamera();
 	LastCarLocation = Car->GetActorLocation();
+	LastCarTime = Now();
 	// held for a 3-2-1 before it may go again; the race clock keeps running (that's the penalty)
 	Car->GetChaosVehicleMovement()->SetParked(true);
+	if (!Car->bAutoShift)
+	{
+		Car->GetChaosVehicleMovement()->SetTargetGear(1, true);     // (manual: in 1st, as on the grid)
+	}
 	bResetHold = true;
 	ResetHoldStart = Now();
 	LastBeep = -1;
@@ -358,7 +402,7 @@ void UTimeTrialSubsystem::Autopilot(AImprezaSTi* Car)
 	// (floored: a hairpin / a gate behind the car must still mean "creep", not a negative speed = brake forever)
 	const float Target = FMath::Max(FMath::Lerp(75.0f, 75.0f - 0.55f * Turn, FMath::Clamp(1.0f - (Dist - 25.0f) / 60.0f, 0.0f, 1.0f)), 18.0f);
 	const float Speed = Car->GetChaosVehicleMovement()->GetForwardSpeed() * 0.036f;
-	// stuck (kerb, wall): back to the last gate, like the player's reset
+	// stuck (kerb, wall): "back on track", placed just before the next gate (the player's goes behind the car)
 	AutoStuck = (State == ETimeTrialState::Running && !bResetHold && FMath::Abs(Speed) < 3.0f) ? AutoStuck + GetWorld()->GetDeltaSeconds() : 0.0f;
 	if (AutoStuck > 2.0f)
 	{
@@ -366,6 +410,14 @@ void UTimeTrialSubsystem::Autopilot(AImprezaSTi* Car)
 		UE_LOG(LogTimeTrial, Display, TEXT("autopilot stuck before route entry %d at (%.0f, %.0f, %.0f) yaw %.0f, gear %d, %.0f rpm, aim %.0f deg, target %.0f km/h, %.0f m from the gate"),
 			RouteIndex, Car->GetActorLocation().X, Car->GetActorLocation().Y, Car->GetActorLocation().Z, Car->GetActorRotation().Yaw,
 			Car->GetChaosVehicleMovement()->GetCurrentGear(), Car->GetChaosVehicleMovement()->GetEngineRotationSpeed(), Angle, Target, Dist);
+		ResetToLastGate(true);    // (this driver can't take every corner from a standstill: it would get stuck again)
+		return;
+	}
+	// -TimeTrialAutoResets=<s>: the player's "back on track" that often (its log line says where it put the car)
+	if (AutoResetEvery > 0.0 && State == ETimeTrialState::Running && !bResetHold && Now() - FMath::Max(StateStart, AutoResetLast) > AutoResetEvery)
+	{
+		AutoResetLast = Now();
+		UE_LOG(LogTimeTrial, Display, TEXT("autopilot: back on track (test) at route %.0f m, %.1f m off the line"), CarRouteS / 100.0f, CarLineDist / 100.0f);
 		ResetToLastGate();
 		return;
 	}
@@ -746,7 +798,7 @@ void UTimeTrialSubsystem::StartEvent(int32 TrackIndex)
 	bAwaitGround = !GroundZ(T.StartLocation, GridZ);
 	if (bAwaitGround)
 	{
-		AwaitGroundSince = FPlatformTime::Seconds();
+		AwaitGroundWaited = 0.0f;
 		GetWorld()->bRequestedBlockOnAsyncLoading = true;
 		UE_LOG(LogTimeTrial, Display, TEXT("event %s: the grid isn't streamed in yet, loading before the countdown"), *T.Name);
 	}
@@ -783,6 +835,7 @@ void UTimeTrialSubsystem::StartEvent(int32 TrackIndex)
 	GhostSplits = BestSplits(T, BestTotal);
 	ClearResults();
 	LastCarLocation = Car->GetActorLocation();
+	LastCarTime = Now();
 	bResetHold = false;
 	BuildRoute();
 	for (int32& E : PoolEntry) { E = -1; }
@@ -894,7 +947,7 @@ void UTimeTrialSubsystem::TickGates()
 	}
 }
 
-bool UTimeTrialSubsystem::CrossedGate(const FTimeTrialGateDef& Gate, const FVector& From, const FVector& To) const
+bool UTimeTrialSubsystem::CrossedGate(const FTimeTrialGateDef& Gate, const FVector& From, const FVector& To, float* OutFraction) const
 {
 	// 2D segment intersection between the car's motion this frame and the gate line (across the road at the gate)
 	const FVector2D Dir(FMath::Cos(FMath::DegreesToRadians(Gate.Yaw)), FMath::Sin(FMath::DegreesToRadians(Gate.Yaw)));
@@ -910,13 +963,14 @@ bool UTimeTrialSubsystem::CrossedGate(const FTimeTrialGateDef& Gate, const FVect
 	const float T = A / (A - B);
 	const FVector2D Hit = FVector2D(From) + (FVector2D(To) - FVector2D(From)) * T;
 	const float Lateral = FVector2D::DotProduct(Hit - C, Side);   // (Side = the right of the gate)
+	if (OutFraction) { *OutFraction = T; }
 	return Lateral >= -Gate.TriggerLeft - Forgiveness && Lateral <= Gate.TriggerRight + Forgiveness;
 }
 
-void UTimeTrialSubsystem::PassGate()
+void UTimeTrialSubsystem::PassGate(double CrossAt)
 {
 	const FTimeTrialTrack& T = Tracks[Active];
-	const double RunTime = Now() - StateStart;
+	const double RunTime = CrossAt - StateStart;
 	const bool bLast = RouteIndex == Route.Num() - 1;
 	LastPassAt = Now();
 	LastPassEntry = RouteIndex;
@@ -956,7 +1010,7 @@ void UTimeTrialSubsystem::PassGate()
 		bLastSplitHasBest && RouteIndex > 0 ? *FString::Printf(TEXT(", %s vs best"), *Signed(LastSplitDelta)) : TEXT(""));
 	if (bLast)
 	{
-		Finish();
+		Finish(CrossAt);
 		return;
 	}
 	PlayUISound(Sound);
@@ -970,15 +1024,15 @@ void UTimeTrialSubsystem::FinishForTest()
 	{
 		UE_LOG(LogTimeTrial, Display, TEXT("test: finishing %s now (not saved)"), *Tracks[Active].Name);
 		bFinishForTest = true;
-		Finish();
+		Finish(Now());
 		bFinishForTest = false;
 	}
 }
 
-void UTimeTrialSubsystem::Finish()
+void UTimeTrialSubsystem::Finish(double CrossAt)
 {
 	const FTimeTrialTrack& T = Tracks[Active];
-	FinishTime = Now() - StateStart;
+	FinishTime = CrossAt - StateStart;
 	State = ETimeTrialState::Finished;
 	// keep the previous best for the results screen before it is overwritten
 	PreviousBestSplits = BestSplits(T, PreviousBest);
@@ -1065,6 +1119,7 @@ void UTimeTrialSubsystem::BuildRoute()
 	}
 	CarRouteS = -ATimeTrialGate::GridOffsetCm;
 	CarLineDist = 0.0f;
+	LastOnLineS = CarRouteS;
 }
 
 void UTimeTrialSubsystem::RoutePoint(float InS, FVector2D& OutPoint, FVector2D& OutDir) const
@@ -1131,6 +1186,10 @@ void UTimeTrialSubsystem::UpdateRouteProgress(const FVector& Loc, const FVector&
 	CarRouteS = BestS;
 	CarLineDist = FMath::Sqrt(BestD2);
 	CarLineDir = BestDir;
+	if (CarLineDist < OnLineCm)
+	{
+		LastOnLineS = CarRouteS;
+	}
 
 	// WRONG WAY: facing against the route and driving forwards for a moment (reversing is fine)
 	const bool bBackwards = SpeedKmh > 8.0f && CarLineDist < 3000.0f && FVector2D::DotProduct(FVector2D(Forward).GetSafeNormal(), CarLineDir) < -0.35f;
@@ -1227,68 +1286,84 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 	// the results; during an event they work like R - a tap = back on track, hold 1 s to restart. A start button, if
 	// one is ever added, does the same.
 	// (a menu over the game has the wheel's buttons: the launch menu runs unpaused, so this tick still runs under it)
-	if (UCambridgeWheelSubsystem* Wheel = UCambridgeWheelSubsystem::Get(this); Wheel && Wheel->IsActive() && !IsUIBlocking())
+	if (UCambridgeWheelSubsystem* Wheel = UCambridgeWheelSubsystem::Get(this); Wheel && Wheel->IsActive())
 	{
 		const FWheelInputState S = Wheel->GetState();
-		const bool bStartEdge = Wheel->ConsumeStart();            // rising edge: catches a press shorter than a frame
 		const bool bPaddles = S.bUpshift && S.bDownshift;
-		const bool bPressed = bStartEdge || (bPaddles && !bBothPaddlesHeld);
-		const bool bDown = S.bStart || bPaddles;
-		bBothPaddlesHeld = bPaddles;
-		if (State == ETimeTrialState::Countdown || State == ETimeTrialState::Running)
+		// paddles already together when this tick reads the wheel again - a menu had them (both held 0.8 s closes the
+		// settings) or the game was paused (this tick skipped frames; a slow frame is not a pause) - are not a press here:
+		// they must be let go first
+		const double WheelNow = FPlatformTime::Seconds();
+		const bool bResync = IsUIBlocking() || GFrameCounter - LastWheelPollFrame > 1;
+		LastWheelPollFrame = GFrameCounter;
+		if (bResync)
 		{
-			const double WheelNow = FPlatformTime::Seconds();
-			if (bPressed && !bWheelHold && !IsUIBlocking())
-			{
-				bWheelHold = true;
-				bWheelHoldIsStart = bStartEdge || S.bStart;
-				UE_LOG(LogTimeTrial, Display, TEXT("wheel: %s down (hold to restart)"), bWheelHoldIsStart ? TEXT("start button") : TEXT("both paddles"));
-				if (RestartHeldSince < 0.0)
-				{
-					RestartHeldSince = WheelNow;
-					HoldLabel = LOCTEXT("HoldRestartWheel", "RESTART EVENT");
-				}
-			}
-			if (bWheelHold && !bDown)
-			{
-				bWheelHold = false;
-				if (RestartHeldSince >= 0.0)
-				{
-					const bool bTap = WheelNow - RestartHeldSince < TapSeconds;
-					UE_LOG(LogTimeTrial, Display, TEXT("wheel: released after %.2f s -> %s"), WheelNow - RestartHeldSince,
-						bTap ? TEXT("back on track") : TEXT("nothing (released before the hold)"));
-					if (bTap)
-					{
-						ResetToLastGate();
-					}
-					RestartHeldSince = -1.0;
-				}
-			}
+			bBothPaddlesHeld = bPaddles;
 		}
-		else if (State == ETimeTrialState::Finished)
+		if (IsUIBlocking())
 		{
-			// results: one paddle moves the focus (AImprezaSTi leaves the paddles alone while the results are up), both
-			// tapped (the wheel's start) press it; armed ResultsArmSeconds after the line, like the keys
-			bWheelHold = false;
-			const EWheelMenuAction Action = Wheel->ConsumeMenuAction();
-			if (Now() - FinishedAt >= ResultsArmSeconds && (Action == EWheelMenuAction::Up || Action == EWheelMenuAction::Down))
-			{
-				ResultsFocus = (ResultsFocus + (Action == EWheelMenuAction::Down ? 1 : 2)) % 3;
-				PlayUISound(TEXT("ui_select"), 0.8f);
-			}
-			if (bStartEdge || Action == EWheelMenuAction::Go)
-			{
-				UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (results)"));
-				OnConfirm();
-			}
+			bWheelHold = false;     // (the menu has the wheel; the key holds are cleared below too)
 		}
 		else
 		{
-			bWheelHold = false;
-			if (bPressed)
+			const bool bStartEdge = Wheel->ConsumeStart() && !bResync;   // rising edge: catches a press shorter than a frame
+			const bool bPressed = bStartEdge || (bPaddles && !bBothPaddlesHeld);
+			const bool bDown = S.bStart || bPaddles;
+			bBothPaddlesHeld = bPaddles;
+			if (State == ETimeTrialState::Countdown || State == ETimeTrialState::Running)
 			{
-				UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (free roam)"));
-				OnConfirm();
+				if (bPressed && !bWheelHold && !IsUIBlocking())
+				{
+					bWheelHold = true;
+					bWheelHoldIsStart = bStartEdge || S.bStart;
+					UE_LOG(LogTimeTrial, Display, TEXT("wheel: %s down (hold to restart)"), bWheelHoldIsStart ? TEXT("start button") : TEXT("both paddles"));
+					if (RestartHeldSince < 0.0)
+					{
+						RestartHeldSince = WheelNow;
+						HoldLabel = LOCTEXT("HoldRestartWheel", "RESTART EVENT");
+					}
+				}
+				if (bWheelHold && !bDown)
+				{
+					bWheelHold = false;
+					if (RestartHeldSince >= 0.0)
+					{
+						const bool bTap = WheelNow - RestartHeldSince < TapSeconds;
+						UE_LOG(LogTimeTrial, Display, TEXT("wheel: released after %.2f s -> %s"), WheelNow - RestartHeldSince,
+							bTap ? TEXT("back on track") : TEXT("nothing (released before the hold)"));
+						if (bTap)
+						{
+							ResetToLastGate();
+						}
+						RestartHeldSince = -1.0;
+					}
+				}
+			}
+			else if (State == ETimeTrialState::Finished)
+			{
+				// results: one paddle moves the focus (AImprezaSTi leaves the paddles alone while the results are up), both
+				// tapped (the wheel's start) press it; armed ResultsArmSeconds after the line, like the keys
+				bWheelHold = false;
+				const EWheelMenuAction Action = Wheel->ConsumeMenuAction();
+				if (Now() - FinishedAt >= ResultsArmSeconds && (Action == EWheelMenuAction::Up || Action == EWheelMenuAction::Down))
+				{
+					ResultsFocus = (ResultsFocus + (Action == EWheelMenuAction::Down ? 1 : 2)) % 3;
+					PlayUISound(TEXT("ui_select"), 0.8f);
+				}
+				if (bStartEdge || Action == EWheelMenuAction::Go)
+				{
+					UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (results)"));
+					OnConfirm();
+				}
+			}
+			else
+			{
+				bWheelHold = false;
+				if (bPressed)
+				{
+					UE_LOG(LogTimeTrial, Display, TEXT("wheel: confirm (free roam)"));
+					OnConfirm();
+				}
 			}
 		}
 	}
@@ -1386,8 +1461,9 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 			const FTimeTrialTrack& T = Tracks[Active];
 			float Z = 0.0f;
 			const bool bLoaded = GroundZ(T.StartLocation, Z);
-			const double Waited = FPlatformTime::Seconds() - AwaitGroundSince;
-			if (!bLoaded && Waited < 20.0)
+			AwaitGroundWaited += DeltaTime;     // (game time: a pause - nothing streams then - doesn't use up the wait)
+			const float Waited = AwaitGroundWaited;
+			if (!bLoaded && Waited < 20.0f)
 			{
 				// held on the grid (nothing to stand on yet), the countdown not started
 				Car->SetActorTransform(FTransform(FRotator(0.0f, T.StartYaw, 0.0f), T.StartLocation), false, nullptr, ETeleportType::TeleportPhysics);
@@ -1464,11 +1540,13 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 				}
 			}
 			// at most a few gates per frame (a long hitch at speed can carry the car through two)
+			// (each stamped at the crossing: the time between the two ticks where the move crossed the line)
 			const int32 EntryBefore = RouteIndex;
 			const float RouteSBefore = CarRouteS;
-			for (int32 Guard = 0; Guard < 3 && State == ETimeTrialState::Running && CrossedGate(Tracks[Active].Gates[Route[RouteIndex]], LastCarLocation, Loc); ++Guard)
+			float Fraction = 1.0f;
+			for (int32 Guard = 0; Guard < 3 && State == ETimeTrialState::Running && CrossedGate(Tracks[Active].Gates[Route[RouteIndex]], LastCarLocation, Loc, &Fraction); ++Guard)
 			{
-				PassGate();
+				PassGate(FMath::Lerp(LastCarTime, Now(), double(Fraction)));
 			}
 			if (State == ETimeTrialState::Running && Now() >= PreviewUntil)
 			{
@@ -1485,7 +1563,8 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 					UE_LOG(LogTimeTrial, Display, TEXT("checkpoint %d passed on a long frame (%.1f m moved, %.1f m off the line)"), RouteIndex,
 						FVector::Dist2D(LastCarLocation, Loc) / 100.0, CarLineDist / 100.0f);
 					bMissed = false;
-					PassGate();
+					const float AlongFraction = FMath::Clamp((RouteS[RouteIndex] - RouteSBefore) / FMath::Max(CarRouteS - RouteSBefore, 1.0f), 0.0f, 1.0f);
+					PassGate(FMath::Lerp(LastCarTime, Now(), double(AlongFraction)));
 				}
 			}
 		}
@@ -1528,6 +1607,7 @@ void UTimeTrialSubsystem::Tick(float DeltaTime)
 	if (!bTestHitchHold)
 	{
 		LastCarLocation = Loc;
+		LastCarTime = Now();
 	}
 	bTestHitchHold = false;
 }

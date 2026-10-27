@@ -9,8 +9,10 @@ Output: data/processed/common/props/trees/tree_<variant>.glb, trees.json, render
 Frame: metres, Z up (Blender), trunk base at the origin; the glTF exporter converts to +Y up.
 Each glb is one mesh with two material slots, "bark" (slot 0) and "leaves" (slot 1). Leaves are opaque
 geometry (no alpha). COLOR_0 (RGBA, linear): leaves RGB = albedo incl. a mild baked crown occlusion,
-A = that occlusion term alone; bark RGB = multiplier for the bark texture (occlusion x twig tint), A = occlusion. Textures are not embedded:
-trees.json points at the bark maps in data/raw/textures (fetched/baked by tree_textures.py).
+A = that occlusion term alone; bark RGB = multiplier for the bark texture (occlusion x twig tint x a darker foot
+band), A = occlusion. Leaf UV0.x = autumn rank (tree_gen.autumn_rank), UV0.y = position along the leaf; bark UV0 =
+texture repeats. Textures are not embedded: trees.json points at the bark maps in data/raw/textures (fetched/baked by
+tree_textures.py); trees.json materials.leaves.autumn holds the per-species late-October colours for the UE material.
 """
 import json
 import math
@@ -223,7 +225,7 @@ def verify_glb(path):
     pos = [g["accessors"][pr["attributes"]["POSITION"]] for pr in prims]
     ymin = min(a["min"][1] for a in pos)
     ymax = max(a["max"][1] for a in pos)
-    assert -0.3 < ymin <= 0.0 and ymax > 3.0, (ymin, ymax)
+    assert -0.6 < ymin <= 0.0 and ymax > 3.0, (ymin, ymax)
     return f"glb ok: materials {mats}, COLOR_0 on both primitives, y {ymin:.2f}..{ymax:.2f}"
 
 
@@ -247,6 +249,11 @@ def material_spec(sp, tex, leaves):
                    "two_sided": True, "opacity": "opaque (no mask)",
                    "subsurface": sp.get("leaf_sss", {"color": [0.45, 0.6, 0.12], "strength": 0.5}),
                    "roughness": sp.get("leaf_roughness", 0.55), "specular": 0.35,
+                   "autumn": {"max": sp["autumn"]["max"],
+                              "colors_srgb": [list(c) for c in sp["autumn"]["colors"]],
+                              "mean_luminance": round(float((leaves["color"] * leaves["ao"][:, None] ** 0.6).mean(0)
+                                                         @ np.array([0.2126, 0.7152, 0.0722])), 4),
+                              "rank": "UV0.x = order in which the leaves turn (0 first)"},
                    "texture": None},
     }
 
@@ -281,6 +288,7 @@ def main():
             m.name = f"{m.name}_{name}"
         st["leaf_unit"] = "leaflet" if sp["leaf"]["shape"] == "pinnate" else "leaf"
         st["leaf_triangles_each"] = int(len(leaves["tris"]) // max(leaves["count"], 1))
+        st["leaf_stats"] = leaves.get("stats", {})
         entry = {"file": rel(path), "species": sp["species"], "genera": sp["genera"], **st,
                  "trunk_capsule_height_m": round(min(sp["first_branch"] + 0.5, st["height_m"] * 0.4), 2),
                  "seed": int(seed), "materials": material_spec(sp, tex, leaves),

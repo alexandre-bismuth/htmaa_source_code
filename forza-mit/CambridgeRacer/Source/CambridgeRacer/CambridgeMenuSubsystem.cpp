@@ -11,6 +11,7 @@
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "MinimapSubsystem.h"
 #include "ComponentRecreateRenderStateContext.h"
@@ -123,8 +124,8 @@ namespace
 		Quality(LOCTEXT("AA", "Anti-aliasing"), &UGameUserSettings::GetAntiAliasingQuality, &UGameUserSettings::SetAntiAliasingQuality);
 		Quality(LOCTEXT("Textures", "Textures"), &UGameUserSettings::GetTextureQuality, &UGameUserSettings::SetTextureQuality);
 
-		Rows.Add({ LOCTEXT("Clouds", "Volumetric clouds"), OffOn(),
-			[S] { return S->bVolumetricClouds ? 1 : 0; }, [S](int32 V) { S->bVolumetricClouds = V == 1; } });
+		Rows.Add({ LOCTEXT("DynRes", "Dynamic resolution"), OffOn(),
+			[S] { return S->bDynamicResolution ? 1 : 0; }, [S](int32 V) { S->bDynamicResolution = V == 1; } });
 		Rows.Add({ LOCTEXT("Trees", "Tree draw distance"), { LOCTEXT("T300", "300 m"), LOCTEXT("T400", "400 m"), LOCTEXT("T700", "700 m") },
 			[S] { return S->TreeDistance; }, [S](int32 V) { S->TreeDistance = V; } });
 		Rows.Add({ LOCTEXT("Geometry", "Geometry detail"), { LOCTEXT("GLow", "Low"), LOCTEXT("GMed", "Medium"), LOCTEXT("GHigh", "High") },
@@ -285,7 +286,17 @@ public:
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
 					[
-						CUI::MakeKeyHint(Keys({ TEXT("<"), TEXT(">") }), LOCTEXT("HintChange", "Change"), false)
+						SNew(SBox).Visibility_Lambda([this]() { return IsFooterSelected() ? EVisibility::Collapsed : EVisibility::Visible; })
+						[
+							CUI::MakeKeyHint(Keys({ TEXT("<"), TEXT(">") }), LOCTEXT("HintChange", "Change"), false)
+						]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 20, 0)
+					[
+						SNew(SBox).Visibility_Lambda([this]() { return IsFooterSelected() ? EVisibility::Visible : EVisibility::Collapsed; })
+						[
+							CUI::MakeKeyHint(Keys({ TEXT("ENTER") }), LOCTEXT("HintPress", "Press"), false)
+						]
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 					[
@@ -301,7 +312,10 @@ public:
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 18, 0)
 					[
-						CUI::MakeKeyHint(Keys({ TEXT("RIM") }), LOCTEXT("WheelChange", "Turn: change"), false)
+						CUI::MakeKeyHint(Keys({ TEXT("RIM") }), TAttribute<FText>::CreateLambda([this]()
+						{
+							return IsFooterSelected() ? LOCTEXT("WheelPress", "Turn: press") : LOCTEXT("WheelChange", "Turn: change");
+						}), false)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 18, 0)
 					[
@@ -314,22 +328,29 @@ public:
 				]
 			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNullWidget::NullWidget ];
+		// the footer buttons come after the rows in the Up / Down order (keys, gamepad, the wheel's paddles), so the Main
+		// menu is reachable without a mouse; Enter / A / > (the rim turned right) presses the selected one, like an action row
+		FooterButtons.Reserve(2);     // (fixed from here on: the buttons point at these styles)
+		auto AddFooterButton = [this, &Footer](const FText& Label, TFunction<void()> Press, bool bPrimary, float RightPadding)
+		{
+			const TSharedRef<SWidget> Button = CUI::MakeXPButton(Label, FOnClicked::CreateLambda([Press]() { Press(); return FReply::Handled(); }), bPrimary);
+			FFooterButton& F = FooterButtons.AddDefaulted_GetRef();
+			F.Press = Press;
+			F.Button = Button->GetType() == TEXT("SButton") ? StaticCastSharedRef<SButton>(Button) : TSharedPtr<SButton>();   // (MakeXPButton's SButton)
+			F.Normal = &CUI::Button(bPrimary ? "Button.Primary" : "Button");
+			F.Focused = *F.Normal;
+			F.Focused.SetNormal(*CUI::Brush(bPrimary ? "xp_start_focus" : "xp_button_focus"));
+			StaticCastSharedRef<SHorizontalBox>(Footer)->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, RightPadding, 0)
+			[
+				Button
+			];
+		};
 		if (InArgs._OnMainMenu.IsBound())
 		{
 			const FSimpleDelegate MainMenu = InArgs._OnMainMenu;
-			StaticCastSharedRef<SHorizontalBox>(Footer)->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
-			[
-				CUI::MakeXPButton(LOCTEXT("MainMenu", "Main menu"), FOnClicked::CreateLambda([MainMenu]()
-				{
-					MainMenu.ExecuteIfBound();
-					return FReply::Handled();
-				}))
-			];
+			AddFooterButton(LOCTEXT("MainMenu", "Main menu"), [MainMenu]() { MainMenu.ExecuteIfBound(); }, false, 10.0f);
 		}
-		StaticCastSharedRef<SHorizontalBox>(Footer)->AddSlot().AutoWidth().VAlign(VAlign_Center)
-		[
-			CUI::MakeXPButton(InArgs._bFromLaunch ? LOCTEXT("Back", "Back") : LOCTEXT("Resume", "Resume"), Close, true)
-		];
+		AddFooterButton(InArgs._bFromLaunch ? LOCTEXT("Back", "Back") : LOCTEXT("Resume", "Resume"), [this]() { OnClose.ExecuteIfBound(); }, true, 0.0f);
 		TSharedRef<SWidget> Content = SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 			[
@@ -390,12 +411,31 @@ public:
 
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
+	{
+		SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+		// the selected footer button shows the XP focus ring
+		for (int32 k = 0; k < FooterButtons.Num(); ++k)
+		{
+			FFooterButton& F = FooterButtons[k];
+			const bool bFocused = Selected == Visible.Num() + k;
+			if (F.Button.IsValid() && bFocused != F.bShownFocused)
+			{
+				F.bShownFocused = bFocused;
+				F.Button->SetButtonStyle(bFocused ? &F.Focused : F.Normal);
+			}
+		}
+	}
+
 	void ShowTab(int32 NewTab) { SetTab(FMath::Clamp(NewTab, 0, NumTabs - 1)); }
+
+	/** A footer button (Main menu, Resume) is selected: they follow the rows in the Up / Down order. */
+	bool IsFooterSelected() const { return Selected >= Visible.Num(); }
 
 	virtual FReply OnKeyDown(const FGeometry&, const FKeyEvent& Event) override
 	{
 		const FKey K = Event.GetKey();
-		const int32 N = Visible.Num();
+		const int32 N = Visible.Num() + FooterButtons.Num();     // (the rows, then the footer buttons)
 		if (K == EKeys::Gamepad_FaceButton_Right || K == EKeys::BackSpace)
 		{
 			OnClose.ExecuteIfBound();     // back
@@ -414,7 +454,7 @@ public:
 		}
 		else if (K == EKeys::Up || K == EKeys::Gamepad_DPad_Up || K == EKeys::W)
 		{
-			Selected = (Selected + N - 1) % N;
+			Selected = Selected < 0 ? N - 1 : (Selected + N - 1) % N;
 		}
 		else if (K == EKeys::Down || K == EKeys::Gamepad_DPad_Down || K == EKeys::S)
 		{
@@ -422,11 +462,19 @@ public:
 		}
 		else if (K == EKeys::Left || K == EKeys::Gamepad_DPad_Left || K == EKeys::A)
 		{
-			Change(Visible[Selected], -1);
+			if (Visible.IsValidIndex(Selected)) { Change(Visible[Selected], -1); }
 		}
 		else if (K == EKeys::Right || K == EKeys::Gamepad_DPad_Right || K == EKeys::D || K == EKeys::Enter || K == EKeys::Gamepad_FaceButton_Bottom)
 		{
-			Change(Visible[Selected], +1);
+			if (Visible.IsValidIndex(Selected))
+			{
+				Change(Visible[Selected], +1);
+			}
+			else if (FooterButtons.IsValidIndex(Selected - Visible.Num()))
+			{
+				const TFunction<void()> Press = FooterButtons[Selected - Visible.Num()].Press;    // (a copy: it may close this menu)
+				Press();
+			}
 		}
 		else
 		{
@@ -483,6 +531,10 @@ private:
 					CambridgeUI::MakeListRow(RowContent, TAttribute<bool>::CreateLambda([this, V]() { return V == Selected; }), [this, V]() { Selected = V; })
 				]
 			];
+		}
+		if (Visible.Num() == 0)
+		{
+			Selected = INDEX_NONE;     // (no rows, e.g. Controls: Enter must not press the first footer button)
 		}
 		if (Tab == ControlsTab)
 		{
@@ -556,12 +608,22 @@ private:
 		}
 	}
 
+
 	FSimpleDelegate OnClose;
 	TArray<FSettingRow> Rows;
 	TArray<int32> Visible;      // row indices of the current tab
 	TSharedPtr<SBox> ListHost;
 	int32 Tab = 0;
-	int32 Selected = 0;
+	int32 Selected = 0;         // Visible index, then Visible.Num() + footer button; INDEX_NONE: nothing
+	struct FFooterButton
+	{
+		TSharedPtr<SButton> Button;
+		TFunction<void()> Press;
+		const FButtonStyle* Normal = nullptr;
+		FButtonStyle Focused;   // Normal with the XP focus ring
+		bool bShownFocused = false;
+	};
+	TArray<FFooterButton> FooterButtons;
 };
 
 class FCambridgeMenuInput : public IInputProcessor
@@ -709,7 +771,9 @@ void UCambridgeMenuSubsystem::TickWheelNavigation()
 	else if (FMath::Abs(Rim) > 50.0f)
 	{
 		bRimArmed = false;
-		Press(Rim > 0.0f ? EKeys::Right : EKeys::Left);
+		// (on a footer button either way presses it, as the hint says)
+		const bool bFooter = StaticCastSharedPtr<SCambridgeMenu>(Menu)->IsFooterSelected();
+		Press(bFooter ? EKeys::Enter : Rim > 0.0f ? EKeys::Right : EKeys::Left);
 	}
 }
 
@@ -766,6 +830,28 @@ void UCambridgeMenuSubsystem::ShowTab(int32 Tab)
 	{
 		StaticCastSharedPtr<SCambridgeMenu>(MenuWidget)->ShowTab(Tab);
 	}
+}
+
+void UCambridgeMenuSubsystem::PressKey(const FKey& Key)
+{
+	if (IsMenuOpen())
+	{
+		const TSharedPtr<SWidget> Keep = MenuWidget;   // (a key that closes the menu frees MenuWidget inside OnKeyDown)
+		Keep->OnKeyDown(FGeometry(), FKeyEvent(Key, FModifierKeysState(), 0, false, 0, 0));
+	}
+}
+
+namespace
+{
+	// test: drive the open settings menu from a shot tour step, e.g. "cr.Menu.Tab 1; cr.Menu.Key Up" (the footer buttons)
+	FAutoConsoleCommandWithWorldAndArgs MenuKeyCmd(TEXT("cr.Menu.Key"), TEXT("Test: press a key in the open settings menu (Up, Down, Left, Right, Enter, Tab, ...)"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (UCambridgeMenuSubsystem* Menu = World && World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UCambridgeMenuSubsystem>() : nullptr; Menu && Args.Num())
+			{
+				Menu->PressKey(FKey(*Args[0]));
+			}
+		}));
 }
 
 void UCambridgeMenuSubsystem::ToggleMenu()

@@ -51,7 +51,7 @@ def fetch(z, x, y, cache):
             return
         except Exception:
             time.sleep(1.5 * (attempt + 1))
-    print(f"  failed tile {x},{y}")
+    raise RuntimeError(f"tile {x},{y} failed 4 times: rerun (cached tiles are kept); a missing tile would be a black square")
 
 
 def main(region, context=False):

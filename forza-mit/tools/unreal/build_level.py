@@ -29,6 +29,7 @@ MAP = f"/Game/Cambridge/Maps/{REGION}"
 GAME_MODE = "/Script/CambridgeRacer.CambridgeGameMode"
 
 COLORS = {"boundary": (1.0, 0.0, 1.0)}  # editor-only placeholder for the invisible wall
+NO_COLLISION = {"water", "markings_white", "markings_yellow"}   # as in import_meshes.py (+ the ctx_ ring)
 
 actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 level_editor = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
@@ -68,18 +69,29 @@ PROP_PARTS = {"tree": [("jacaranda_tree", 0.0)], "lamp": [("lamp_post", 0.0), ("
 TREE_VARIANTS = json.loads((ROOT / "data/processed/common/props/trees/trees.json").read_text())["variants"]
 PROP_CULL_CM.update({f"tree_{v}": 40000 for v in TREE_VARIANTS})
 PROP_PARTS.update({f"tree_{v}": [(f"tree_{v}", 0.0)] for v in TREE_VARIANTS})
+# parked cars (tools/blender/parked_cars.py, props.py place_parked): Nanite, 250 m cull (a car is ~10 px there).
+# NB the mesh names must never contain "tree" (the game's tree draw-distance setting matches on it)
+_PARKED_JSON = ROOT / "data/processed/common/props/parked_cars.json"
+PARKED_TYPES = json.loads(_PARKED_JSON.read_text())["types"] if _PARKED_JSON.exists() else {}
+PROP_CULL_CM.update({f"parked_{t}": 25000 for t in PARKED_TYPES})
+PROP_PARTS.update({f"parked_{t}": [(f"parked_{t}", 0.0)] for t in PARKED_TYPES})
 
 PROPS = "/Game/Cambridge/Props"
 EXPOSURE_EV = 0.9   # manual exposure compensation (EV); tuned against the shot tour
-SUN = {"pitch": -30.0, "yaw": -40.0, "temperature": 5400.0}   # mid-afternoon sun from the south-west
-SKY_INTENSITY = 1.5
-# colour grade: a touch warmer and more saturated, brighter bounce light so shade isn't grey,
-# slightly cooler shadows against warm highlights (keeps depth)
+# the sun stands where it is in the sky photo (tools/blender/make_sky.py; the dome's u offset puts the photo's sun at
+# this yaw, tools/unreal/build_sky.py): early afternoon from the south-west
+SKY = json.loads((ROOT / "data/processed/common/sky/sky.json").read_text())
+# sun vs sky light: on a clear day the sun gives ~3-6x the sky's light on the ground. With the photographed sky the sky
+# light at 1.5 matched the 6 lux sun (flat, blue-washed shade); 10 / 0.5 keep the sunlit surfaces as bright (look2 tour)
+SUN = {"pitch": -SKY["sun_elevation_deg"], "yaw": SKY["sun_yaw_deg"], "temperature": 5400.0, "intensity": 10.0}
+SKY_INTENSITY = 0.5
+SKY_DOME_CM = 1.0e7       # dome radius (100 km: past everything, the context ring and Boston included)
+# colour grade: a touch warmer and more saturated, slightly cooler shadows against warm highlights (keeps depth)
 GRADE = {"white_temp": 6900.0, "color_saturation": unreal.Vector4(1.08, 1.08, 1.08, 1.0),
          "color_contrast": unreal.Vector4(1.05, 1.05, 1.05, 1.0),
          "color_gain_shadows": unreal.Vector4(0.97, 0.99, 1.04, 1.0),
          "color_gain_highlights": unreal.Vector4(1.03, 1.0, 0.96, 1.0),
-         "indirect_lighting_intensity": 1.3}
+         "indirect_lighting_intensity": 1.0}
 
 
 def prop_mesh(name):
@@ -140,8 +152,14 @@ def setup_lighting():
             c = a.get_component_by_class(unreal.DirectionalLightComponent)
             c.set_editor_property("use_temperature", True)
             c.set_editor_property("temperature", SUN["temperature"])
+            c.set_editor_property("intensity", SUN["intensity"])
+            c.set_editor_property("atmosphere_sun_light", True)   # (View.AtmosphereLightDirection in the materials)
         elif isinstance(a, unreal.SkyLight):
-            a.get_component_by_class(unreal.SkyLightComponent).set_editor_property("intensity", SKY_INTENSITY)
+            c = a.get_component_by_class(unreal.SkyLightComponent)
+            c.set_editor_property("intensity", SKY_INTENSITY)
+            c.set_editor_property("real_time_capture", True)   # captures the sky dome
+        elif isinstance(a, unreal.VolumetricCloud):
+            actors.destroy_actor(a)   # the photographed sky replaces them (they cost ~5 ms at 1080p)
         elif isinstance(a, unreal.ExponentialHeightFog):
             c = a.get_component_by_class(unreal.ExponentialHeightFogComponent)
             c.set_editor_property("fog_density", 0.006)
@@ -157,7 +175,7 @@ def setup_lighting():
     s.set_editor_property("auto_exposure_apply_physical_camera_exposure", False)
     for k, v in {"auto_exposure_bias": EXPOSURE_EV,
                  "bloom_intensity": 0.45, "vignette_intensity": 0.3, "ambient_occlusion_intensity": 0.85,
-                 "motion_blur_amount": 0.25, "lumen_final_gather_quality": 2.0, "lumen_reflection_quality": 1.0,
+                 "motion_blur_amount": 0.25, "lumen_final_gather_quality": 1.0, "lumen_reflection_quality": 1.0,
                  "film_grain_intensity": 0.0, **GRADE}.items():
         try:
             s.set_editor_property(f"override_{k}", True)
@@ -165,6 +183,21 @@ def setup_lighting():
         except Exception as e:
             unreal.log_warning(f"post setting {k}: {e}")
     ppv.set_editor_property("settings", s)
+    # the sky: an unlit "Is Sky" dome with the photographed sky (tools/unreal/build_sky.py; no fog / aerial perspective on it)
+    dome = actors.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(0, 0, 0))
+    dome.set_actor_label("SkyDome")
+    dome.set_actor_scale3d(unreal.Vector(1, 1, 1) * (SKY_DOME_CM / 50.0))   # the engine sphere is 100 cm across
+    smc = dome.get_editor_property("static_mesh_component")
+    smc.set_static_mesh(unreal.load_asset("/Engine/BasicShapes/Sphere"))
+    dome_material = unreal.load_asset("/Game/Cambridge/Sky/M_SkyDome")
+    assert dome_material, "no /Game/Cambridge/Sky/M_SkyDome: run tools/unreal/build_sky.sh first"
+    smc.set_material(0, dome_material)
+    smc.set_collision_profile_name("NoCollision")   # (CollisionEnabled alone is reset to the profile's on load:
+    smc.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)   # the player couldn't spawn inside the sphere)
+    for k, v in {"cast_shadow": False, "affect_distance_field_lighting": False, "affect_dynamic_indirect_lighting": False,
+                 "visible_in_ray_tracing": False, "generate_overlap_events": False}.items():
+        smc.set_editor_property(k, v)
+    always_loaded(dome)
     for a in actors.get_all_level_actors():
         if isinstance(a, (unreal.Light, unreal.SkyLight, unreal.ExponentialHeightFog, unreal.SkyAtmosphere,
                           unreal.VolumetricCloud, unreal.PostProcessVolume)):
@@ -200,8 +233,14 @@ def build():
         smc.set_editor_property("mobility", unreal.ComponentMobility.STATIC)
         if cls.startswith("ctx_"):
             always_loaded(a)   # skyline stays visible from anywhere (HLODs would replace this later)
-            smc.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+        if cls.startswith("ctx_") or cls in NO_COLLISION:
+            # the profile is what sticks (CollisionEnabled alone is reset to the profile's on load)
+            smc.set_collision_profile_name("NoCollision")
             smc.set_editor_property("generate_overlap_events", False)
+        if cls.startswith("markings"):
+            # 6 mm of paint: no shadow, no distance field
+            smc.set_editor_property("cast_shadow", False)
+            smc.set_editor_property("affect_distance_field_lighting", False)
         if cls == "boundary":
             smc.set_material(0, placeholder_material("boundary", COLORS["boundary"]))
             a.set_actor_hidden_in_game(True)

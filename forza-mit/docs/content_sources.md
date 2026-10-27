@@ -471,3 +471,10 @@ Order is by visual payoff per hour, given the existing pipeline. The effort figu
 - © OpenStreetMap contributors (ODbL), if OSM points are used.
 - Bluebikes data licence and MBTA, if their stops and stations are used.
 - Fab Standard License items (Megaplants): check the licence's redistribution terms before shipping a build (not verified).
+
+## 6. Sky (added 2026-10-26)
+The sky is a photographed HDRI on an unlit "Is Sky" dome (it replaced the volumetric clouds, which cost ~5 ms per frame
+at 1080p): Poly Haven **Rustig Koppie (Pure Sky)**, https://polyhaven.com/a/rustig_koppie_puresky, CC0, by Greg Zaal
+(photo) and Jarod Guest (sky-only edit), 8K .hdr. Sun at 28 deg in the photo; the game's sun light is aimed at it.
+Fetched by `tools/mapgen/fetch_sky.py`, processed by `tools/blender/make_sky.py` (sun disc capped, ground half replaced
+by horizon haze), imported by `tools/unreal/build_sky.sh`.

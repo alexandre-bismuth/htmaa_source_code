@@ -10,6 +10,8 @@
 //         P3 = (paint coat, paint coat roughness, decal coat, decal coat roughness)
 //         P4 = (mica flop, top normal strength, use AO texture, AO strength)
 //         P5 = (use mask texture, decal metallic, paint green gain, 0)
+//         OP (Texture2D orange-peel normal, BC5), P6 = (orange-peel tiling per UV, strength, fade start cm, fade end cm):
+//              the clear coat's micro-waviness, so close-up reflections are not liquid chrome
 //              green gain: the filmic tonemapper pushes saturated blues toward violet; a little more green
 //              keeps WR Blue Mica's hue (~222 deg) on screen
 // Outputs: return = base colour; Metal, Rough, CC, CCR, AO (float); Nrm (coat normal), BotNrm (base normal), tangent space
@@ -22,6 +24,8 @@ if (P5.x > 0.5)
 
 // coat surface: panel / shut-line detail from the body normal map
 float2 pnxy = (Texture2DSample(PN, PNSampler, UV).rg * 2.0 - 1.0) * P4.y;
+float opfade = 1.0 - saturate((D - P6.z) / max(P6.w - P6.z, 1.0));
+pnxy += (Texture2DSample(OP, OPSampler, UV * P6.x).rg * 2.0 - 1.0) * (P6.y * opfade);
 float3 pn = float3(pnxy, sqrt(saturate(1.0 - dot(pnxy, pnxy))));
 
 // flakes: high-frequency tiled platelets, faded with distance (mips average them to flat anyway)
@@ -39,9 +43,8 @@ float3 base = livery * lerp(1.0, flop, paint) * lerp(float3(1, 1, 1), float3(1, 
 AO = 1.0;
 if (P4.z > 0.5)
 {
+    // the bake fills off-island / hidden texels from their surroundings (build_sti.fill_invalid), values 0.35..1
     float ao = Texture2DSample(AOT, AOTSampler, UV).r;
-    // the bake's off-island fill is 0.25 and some paint pieces (scoop, wing...) sample it: treat it as open
-    ao = lerp(1.0, ao, smoothstep(0.27, 0.33, ao));
     AO = lerp(1.0, ao, P4.w);
     base *= lerp(1.0, AO, 0.5);    // cavity darkening in direct light too (AO itself only affects indirect)
 }

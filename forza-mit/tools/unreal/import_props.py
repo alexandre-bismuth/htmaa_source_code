@@ -50,11 +50,23 @@ TEXTURED_PROPS = {"fire_hydrant": True, "metal_trash_can": True, "painted_wooden
 # procedural street trees (meshes in metres, Y-up glTF; slots "bark" (0) and "leaves" (1))
 TREES = json.loads((ROOT / "data/processed/common/props/trees/trees.json").read_text())["variants"]
 SOURCES.update({f"tree_{v}": ROOT / spec["file"] for v, spec in TREES.items()})
+# parked cars (tools/blender/parked_cars.py): one mesh per body type, slots parked_paint / parked_glass / parked_detail,
+# COLOR_0 = baked AO (paint, glass) or albedo + surface class (detail). See setup_parked(). Street life agent.
+PARKED_JSON = ROOT / "data/processed/common/props/parked_cars.json"
+PARKED = json.loads(PARKED_JSON.read_text())["types"] if PARKED_JSON.exists() else {}
+SOURCES.update({f"parked_{t}": ROOT / spec["file"] for t, spec in PARKED.items()})
+PARKED_MATS = f"{DEST}/Materials/Parked"
 TREE_BARK = f"{DEST}/TreeBark"
 TREE_MATS = f"{DEST}/Materials/Trees"
 # Nanite distance behaviour of the canopies: "PRESERVE_AREA" (the task's choice; the 5.8 header calls
 # it the legacy foliage technique) or "VOXELIZE" (5.8: distant leaves become voxels) to A/B
 TREE_SHAPE_PRESERVATION = "PRESERVE_AREA"
+# Nanite "Lerp UVs" on the tree meshes: the leaves' UV0 is not a texture mapping (x = autumn rank per leaf), so its
+# interpolation error should not hold back the simplification; bark UVs only matter up close
+TREE_LERP_UVS = True
+# Nanite data kept resident per tree mesh (KB; 0 = engine minimum, one root page). While a canopy's finer pages stream
+# in, the root page's coarse LOD can be what the (cached, static) virtual shadow map captures
+TREE_MIN_RESIDENCY_KB = 0
 
 
 def bark_sets():
@@ -249,6 +261,8 @@ TRUNK_CM = {"jacaranda_tree": (25.0, 400.0), "lamp_post": (14.0, 375.0), "cobra_
 
 
 def main():
+    if PHASE in ("parked_import", "parked_post"):     # parked cars only (no tree / furniture re-import)
+        return parked_only(PHASE)
     if PHASE == "import":
         tasks = []
         for name, src in SOURCES.items():
@@ -370,6 +384,7 @@ def main():
             EAL.save_loaded_asset(mesh, only_if_is_dirty=False)
 
     setup_trees()
+    setup_parked()
 
 
 # ------------------------------------------------------------------ procedural street trees
@@ -476,40 +491,70 @@ def bark_master(default_tex):
     return m
 
 
+LEAF_HLSL = """
+// per-tree variation + late-October colour (import_props.leaf_master). Rnd = PerInstanceRandom (one per tree),
+// Rank = UV0.x (tree_gen.autumn_rank: the order in which the leaves turn, 0 first).
+float r2 = frac(Rnd * 7.31 + 0.17);
+float3 base = VC * Tint * lerp(float3(1.05, 1.03, 0.92), float3(0.95, 0.97, 1.05), r2);
+float amount = AutumnMax * Rnd * Rnd;                 // most trees barely turned, a few well on
+float w = saturate((amount - Rank.x) * 12.0);
+float lum = dot(VC, float3(0.2126, 0.7152, 0.0722)) / max(MeanLum, 1e-3);
+float3 aut = lerp(AutumnA, AutumnB, frac(Rank.x * 13.7)) * lum;
+Sub = lerp(SSC, aut * 1.3, w) * SSS * VA;
+return lerp(base, aut, w);
+"""
+
+
 def leaf_master():
-    """Opaque two-sided foliage leaves (real leaf geometry, no alpha): BaseColor = vertex colour RGB
-    (final albedo incl. baked occlusion) x Tint; transmission = SubsurfaceColor x Strength x vertex
-    alpha (occlusion: inner leaves glow less); constant roughness / specular per instance."""
+    """Opaque two-sided foliage leaves (real leaf geometry, no alpha): BaseColor = vertex colour RGB (final albedo
+    incl. baked occlusion) x Tint x a subtle per-tree tint (PerInstanceRandom), with a per-tree random share of the
+    leaves (UV0.x rank < AutumnMax x random^2) turned to the species' autumn colours (AutumnA/B, scaled by the
+    vertex colour's luminance / MeanLum so the baked occlusion stays); transmission = SubsurfaceColor (or the
+    autumn colour) x Strength x vertex alpha (occlusion: inner leaves glow less); constant roughness / specular."""
     m = tree_material("M_TreeLeaves_Opaque")
     m.set_editor_property("two_sided", True)
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_OPAQUE)
     m.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
-    vc = MEL.create_material_expression(m, unreal.MaterialExpressionVertexColor, -800, 0)
-    tint = param(m, unreal.MaterialExpressionVectorParameter, "Tint", -800, 150,
-                 default_value=unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
-    base = MEL.create_material_expression(m, unreal.MaterialExpressionMultiply, -500, 50)
-    link(vc, "", base, "A")    # first output = RGB
-    link(tint, "RGB", base, "B")
-    rough = param(m, unreal.MaterialExpressionScalarParameter, "Roughness", -500, 250, default_value=0.55)
-    spec = param(m, unreal.MaterialExpressionScalarParameter, "Specular", -500, 330, default_value=0.35)
-    ssc = param(m, unreal.MaterialExpressionVectorParameter, "SubsurfaceColor", -800, 450,
-                default_value=unreal.LinearColor(0.45, 0.6, 0.12, 1.0))
-    sss = param(m, unreal.MaterialExpressionScalarParameter, "SubsurfaceStrength", -800, 600, default_value=0.5)
-    s1 = MEL.create_material_expression(m, unreal.MaterialExpressionMultiply, -500, 500)
-    link(ssc, "RGB", s1, "A")
-    link(sss, "", s1, "B")
-    s2 = MEL.create_material_expression(m, unreal.MaterialExpressionMultiply, -350, 550)
-    link(s1, "", s2, "A")
-    # VertexColor's default ("") output is RGB only (float3): masking A off it fails to compile and
-    # UE silently renders the grey Default Material on every leaf. Use the dedicated "A" output.
-    link(vc, "A", s2, "B")
-    prop_link(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    vc = MEL.create_material_expression(m, unreal.MaterialExpressionVertexColor, -900, 0)
+    uv = MEL.create_material_expression(m, unreal.MaterialExpressionTextureCoordinate, -900, 100)
+    rnd = MEL.create_material_expression(m, unreal.MaterialExpressionPerInstanceRandom, -900, 180)
+    V = lambda name, val, y: param(m, unreal.MaterialExpressionVectorParameter, name, -900, y,
+                                   default_value=unreal.LinearColor(*val, 1.0))
+    S = lambda name, val, y: param(m, unreal.MaterialExpressionScalarParameter, name, -900, y, default_value=val)
+    # (VertexColor's "" output is RGB only: alpha comes in through its "A" output)
+    ins = [("VC", vc, ""), ("VA", vc, "A"), ("Rank", uv, ""), ("Rnd", rnd, ""), ("Tint", V("Tint", (1.0, 1.0, 1.0), 260), "RGB"),
+           ("AutumnA", V("AutumnA", (0.45, 0.3, 0.05), 340), "RGB"), ("AutumnB", V("AutumnB", (0.35, 0.25, 0.05), 420), "RGB"),
+           ("AutumnMax", S("AutumnMax", 0.0, 500), ""), ("MeanLum", S("MeanLum", 0.05, 560), ""),
+           ("SSC", V("SubsurfaceColor", (0.45, 0.6, 0.12), 620), "RGB"), ("SSS", S("SubsurfaceStrength", 0.5, 700), "")]
+    c = MEL.create_material_expression(m, unreal.MaterialExpressionCustom, -400, 0)
+    pins = []
+    for n, _, _ in ins:
+        ci = unreal.CustomInput()
+        ci.set_editor_property("input_name", n)
+        pins.append(ci)
+    c.set_editor_property("inputs", pins)
+    co = unreal.CustomOutput()
+    co.set_editor_property("output_name", "Sub")
+    co.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    c.set_editor_property("additional_outputs", [co])
+    c.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    c.set_editor_property("description", "tree leaves")
+    c.set_editor_property("code", LEAF_HLSL)
+    for n, e, pin in ins:
+        link(e, pin, c, n)
+    rough = param(m, unreal.MaterialExpressionScalarParameter, "Roughness", -500, 800, default_value=0.55)
+    spec = param(m, unreal.MaterialExpressionScalarParameter, "Specular", -500, 880, default_value=0.35)
+    prop_link(c, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    prop_link(c, "Sub", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
     prop_link(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
     prop_link(spec, "", unreal.MaterialProperty.MP_SPECULAR)
-    prop_link(s2, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
     MEL.recompile_material(m)
     EAL.save_loaded_asset(m, only_if_is_dirty=False)
     return m
+
+
+def srgb_lin(c):
+    return [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
 
 
 def tree_instance(name, parent, scalars=(), vectors=(), textures=()):
@@ -547,12 +592,17 @@ def setup_trees():
                                           textures=[("BaseColorTex", tex[bset]["D"]), ("NormalTex", tex[bset]["N"]),
                                                     ("RoughnessTex", tex[bset]["R"])])
         ss = l.get("subsurface") or {"color": [0.45, 0.6, 0.12], "strength": 0.5}
-        lkey = (l["roughness"], l["specular"], tuple(ss["color"]), ss["strength"])
+        au = l.get("autumn") or {"max": 0.0, "colors_srgb": [[0.5, 0.4, 0.1]] * 2, "mean_luminance": 0.05}
+        lkey = (l["roughness"], l["specular"], tuple(ss["color"]), ss["strength"], au["max"],
+                tuple(map(tuple, au["colors_srgb"])), au["mean_luminance"])
         if lkey not in leaf_mi:
             leaf_mi[lkey] = tree_instance(f"MI_TreeLeaves_{len(leaf_mi) + 1}", leaf_m,
                                           scalars=[("Roughness", l["roughness"]), ("Specular", l["specular"]),
-                                                   ("SubsurfaceStrength", ss["strength"])],
-                                          vectors=[("SubsurfaceColor", ss["color"])])
+                                                   ("SubsurfaceStrength", ss["strength"]), ("AutumnMax", au["max"]),
+                                                   ("MeanLum", au["mean_luminance"])],
+                                          vectors=[("SubsurfaceColor", ss["color"]),
+                                                   ("AutumnA", srgb_lin(au["colors_srgb"][0])),
+                                                   ("AutumnB", srgb_lin(au["colors_srgb"][-1]))])
         meshes = assets_in(f"{DEST}/tree_{v}", unreal.StaticMesh)
         if not meshes:
             report[v] = "error: no mesh imported"
@@ -567,6 +617,14 @@ def setup_trees():
         ns = mesh.get_editor_property("nanite_settings")
         ns.enabled = True
         set_shape_preservation(ns, TREE_SHAPE_PRESERVATION, v)
+        try:
+            ns.set_editor_property("lerp_u_vs", TREE_LERP_UVS)
+        except Exception as e:
+            unreal.log_warning(f"{v}: nanite lerp_u_vs: {e}")
+        try:
+            ns.set_editor_property("target_minimum_residency_in_kb", int(TREE_MIN_RESIDENCY_KB))
+        except Exception as e:
+            unreal.log_warning(f"{v}: nanite target_minimum_residency_in_kb: {e}")
         mesh.set_editor_property("nanite_settings", ns)
         # the car hits the trunk only; capsule from the trunk radius at 1 m and the clear trunk height
         ok = unreal.CambridgeWorldTools.set_trunk_collision(mesh, spec["trunk_radius_m"] * 100.0,
@@ -577,12 +635,236 @@ def setup_trees():
             ns = mesh.get_editor_property("nanite_settings")
             ext = mesh.get_bounds().box_extent        # expect ~ (crown r, crown r, height / 2) x 100
             report[v].update(nanite=bool(ns.enabled), shape_preservation=str(ns.get_editor_property("shape_preservation")),
+                             lerp_uvs=bool(ns.get_editor_property("lerp_u_vs")),
+                             min_residency_kb=int(ns.get_editor_property("target_minimum_residency_in_kb")),
                              size_cm=[round(2 * ext.x), round(2 * ext.y), round(2 * ext.z)])
         except Exception as e:
             report[v]["report_error"] = str(e)
     (ROOT / "data/processed/common/props/ue_trees_report.json").write_text(json.dumps(
         {"bark_instances": [mi.get_name() for mi in bark_mi.values()],
          "leaf_instances": [mi.get_name() for mi in leaf_mi.values()], "variants": report}, indent=2))
+
+
+# ------------------------------------------------------------------ parked cars (street life)
+# Paint colour per instance from PerInstanceRandom (place_props adds no custom data): a weighted Cambridge palette
+# (white / black / greys / silver dominate, some blue / red, a few greens / beiges / browns), metallic or solid per
+# colour, clear coat with a little per-car roughness (dirt). WhiteBias (per body type, parked_cars.json white_bias)
+# adds white fleet vehicles (pickups, vans). COLOR_0.r = baked AO (direct light x (0.45 + 0.55 AO), indirect x AO).
+PARKED_PAINT_HLSL = """
+float r = frac(Rnd);
+float r2 = frac(Rnd * 13.731 + 0.377);
+float r3 = frac(Rnd * 41.17 + 0.71);
+float u = r < WB ? 0.0 : (r - WB) / max(1.0 - WB, 0.001);
+float3 C[13] = { float3(0.78, 0.78, 0.76), float3(0.70, 0.70, 0.68), float3(0.012, 0.012, 0.013), float3(0.07, 0.075, 0.08),
+                 float3(0.18, 0.19, 0.20), float3(0.45, 0.46, 0.47), float3(0.02, 0.05, 0.16), float3(0.05, 0.13, 0.36),
+                 float3(0.36, 0.02, 0.02), float3(0.12, 0.012, 0.015), float3(0.03, 0.07, 0.04), float3(0.35, 0.30, 0.22),
+                 float3(0.10, 0.06, 0.035) };
+float Mt[13] = { 0.0, 0.35, 0.3, 0.7, 0.7, 0.85, 0.6, 0.6, 0.25, 0.6, 0.5, 0.7, 0.5 };
+float W[13] = { 18, 6, 21, 9, 8, 13, 6, 4, 7, 2, 2, 2, 2 };
+int k = 0;
+float acc = 0.0;
+for (int i = 0; i < 12; i++) { acc += W[i] * 0.01; k += (u >= acc) ? 1 : 0; }
+Metal = Mt[k];
+Rough = 0.30 + 0.14 * r3;
+CCR = 0.03 + 0.10 * r3 * r3;
+return C[k] * (0.92 + 0.16 * r2);
+"""
+PARKED_DETAIL_HLSL = """
+int i = (int)round(saturate(A) * 5.0);
+float R[6] = { 0.85, 0.5, 0.6, 0.22, 0.06, 0.4 };
+float M[6] = { 0.0, 0.0, 0.3, 1.0, 0.0, 0.0 };
+float S[6] = { 0.3, 0.45, 0.5, 0.5, 0.6, 0.5 };
+Metal = M[i];
+Spec = S[i];
+return R[i];
+"""
+
+
+def parked_material(name, shading=None, attributes=False):
+    m = ASSETS.create_asset(name, PARKED_MATS, unreal.Material, unreal.MaterialFactoryNew())
+    for flag in ("used_with_nanite", "used_with_instanced_static_meshes"):
+        m.set_editor_property(flag, True)
+    if shading is not None:
+        m.set_editor_property("shading_model", shading)
+    if attributes:
+        m.set_editor_property("use_material_attributes", True)
+    return m
+
+
+def custom_node(m, code, ins, outs, main_type, x, y, desc):
+    F1, F3 = unreal.CustomMaterialOutputType.CMOT_FLOAT1, unreal.CustomMaterialOutputType.CMOT_FLOAT3
+    c = MEL.create_material_expression(m, unreal.MaterialExpressionCustom, x, y)
+    pins = []
+    for n, _, _ in ins:
+        ci = unreal.CustomInput()
+        ci.set_editor_property("input_name", n)
+        pins.append(ci)
+    c.set_editor_property("inputs", pins)
+    ao = []
+    for n in outs:
+        co = unreal.CustomOutput()
+        co.set_editor_property("output_name", n)
+        co.set_editor_property("output_type", F1)
+        ao.append(co)
+    c.set_editor_property("additional_outputs", ao)
+    c.set_editor_property("output_type", F3 if main_type == 3 else F1)
+    c.set_editor_property("description", desc)
+    c.set_editor_property("code", code)
+    for n, e, pin in ins:
+        link(e, pin, c, n)
+    return c
+
+
+def parked_paint_master():
+    m = parked_material("M_ParkedPaint", unreal.MaterialShadingModel.MSM_CLEAR_COAT, attributes=True)
+    mma = MEL.create_material_expression(m, unreal.MaterialExpressionMakeMaterialAttributes, -200, 0)
+    prop_link(mma, "", unreal.MaterialProperty.MP_MATERIAL_ATTRIBUTES)
+    rnd = MEL.create_material_expression(m, unreal.MaterialExpressionPerInstanceRandom, -900, 0)
+    wb = param(m, unreal.MaterialExpressionScalarParameter, "WhiteBias", -900, 100, default_value=0.0)
+    c = custom_node(m, PARKED_PAINT_HLSL, [("Rnd", rnd, ""), ("WB", wb, "")], ["Metal", "Rough", "CCR"], 3, -650, 0,
+                    "parked car palette")
+    vc = MEL.create_material_expression(m, unreal.MaterialExpressionVertexColor, -900, 300)
+    shade = MEL.create_material_expression(m, unreal.MaterialExpressionLinearInterpolate, -650, 300)
+    shade.set_editor_property("const_a", 0.45)
+    shade.set_editor_property("const_b", 1.0)
+    link(vc, "R", shade, "Alpha")
+    base = MEL.create_material_expression(m, unreal.MaterialExpressionMultiply, -420, 100)
+    link(c, "return", base, "A")
+    link(shade, "", base, "B")
+    one = MEL.create_material_expression(m, unreal.MaterialExpressionConstant, -420, 400)
+    one.set_editor_property("r", 1.0)
+    link(base, "", mma, "BaseColor")
+    link(c, "Metal", mma, "Metallic")
+    link(c, "Rough", mma, "Roughness")
+    link(one, "", mma, "ClearCoat")
+    link(c, "CCR", mma, "ClearCoatRoughness")
+    link(vc, "R", mma, "AmbientOcclusion")
+    MEL.recompile_material(m)
+    EAL.save_loaded_asset(m, only_if_is_dirty=False)
+    return m
+
+
+def parked_glass():
+    """Opaque dark glass (Nanite draws no translucency): near-black tint, glossy, AO from COLOR_0."""
+    m = parked_material("M_ParkedGlass")
+    k = MEL.create_material_expression(m, unreal.MaterialExpressionConstant3Vector, -600, 0)
+    k.set_editor_property("constant", unreal.LinearColor(0.012, 0.014, 0.016, 1.0))
+    vc = MEL.create_material_expression(m, unreal.MaterialExpressionVertexColor, -600, 150)
+    mul = MEL.create_material_expression(m, unreal.MaterialExpressionMultiply, -350, 0)
+    link(k, "", mul, "A")
+    link(vc, "R", mul, "B")
+    prop_link(mul, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    for prop, v, y in ((unreal.MaterialProperty.MP_ROUGHNESS, 0.05, 250), (unreal.MaterialProperty.MP_SPECULAR, 0.55, 330),
+                       (unreal.MaterialProperty.MP_METALLIC, 0.0, 410)):
+        e = MEL.create_material_expression(m, unreal.MaterialExpressionConstant, -350, y)
+        e.set_editor_property("r", v)
+        prop_link(e, "", prop)
+    prop_link(vc, "R", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    MEL.recompile_material(m)
+    EAL.save_loaded_asset(m, only_if_is_dirty=False)
+    return m
+
+
+def parked_detail():
+    """Trim / tyres / rims / lamps / plates: BaseColor = COLOR_0.rgb (AO baked in), surface class in COLOR_0.a."""
+    m = parked_material("M_ParkedDetail")
+    vc = MEL.create_material_expression(m, unreal.MaterialExpressionVertexColor, -800, 0)
+    c = custom_node(m, PARKED_DETAIL_HLSL, [("A", vc, "A")], ["Metal", "Spec"], 1, -500, 200, "parked car surface class")
+    prop_link(vc, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    prop_link(c, "return", unreal.MaterialProperty.MP_ROUGHNESS)
+    prop_link(c, "Metal", unreal.MaterialProperty.MP_METALLIC)
+    prop_link(c, "Spec", unreal.MaterialProperty.MP_SPECULAR)
+    MEL.recompile_material(m)
+    EAL.save_loaded_asset(m, only_if_is_dirty=False)
+    return m
+
+
+def parked_box_collision(mesh, spec):
+    """One simple box (parked_cars.json collision, cm, mesh space), used as complex too. -> report dict."""
+    out = {}
+    bs = mesh.get_editor_property("body_setup")
+    if bs is None:
+        return {"error": "no body setup"}
+    agg = bs.get_editor_property("agg_geom")
+    out["before"] = {k: len(agg.get_editor_property(k)) for k in ("box_elems", "convex_elems", "sphyl_elems", "sphere_elems")}
+    col = spec["collision"]
+    box = unreal.KBoxElem()
+    box.set_editor_property("center", unreal.Vector(*col["centre_cm"]))
+    for k, v in zip(("x", "y", "z"), col["size_cm"]):
+        box.set_editor_property(k, float(v))
+    agg.set_editor_property("box_elems", [box])
+    for k in ("convex_elems", "sphyl_elems", "sphere_elems"):
+        agg.set_editor_property(k, [])
+    bs.set_editor_property("agg_geom", agg)
+    bs.set_editor_property("collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
+    mesh.set_editor_property("body_setup", bs)
+    agg2 = mesh.get_editor_property("body_setup").get_editor_property("agg_geom")
+    out["after"] = {k: len(agg2.get_editor_property(k)) for k in ("box_elems", "convex_elems")}
+    b = agg2.get_editor_property("box_elems")
+    if b:
+        out["box"] = [round(b[0].get_editor_property(k), 1) for k in ("x", "y", "z")]
+    return out
+
+
+def setup_parked():
+    """Materials (palette paint master + per-type instance, glass, detail), Nanite, box collision for the parked cars.
+    Writes data/processed/common/props/ue_parked_report.json."""
+    if not PARKED:
+        return
+    if EAL.does_directory_exist(PARKED_MATS):
+        EAL.delete_directory(PARKED_MATS)
+    paint_m, glass_m, det_m = parked_paint_master(), parked_glass(), parked_detail()
+    report = {}
+    for t, spec in PARKED.items():
+        meshes = assets_in(f"{DEST}/parked_{t}", unreal.StaticMesh)
+        if not meshes:
+            report[t] = "error: no mesh imported"
+            continue
+        mesh = meshes[0]
+        mi = ASSETS.create_asset(f"MI_ParkedPaint_{t}", PARKED_MATS, unreal.MaterialInstanceConstant,
+                                 unreal.MaterialInstanceConstantFactoryNew())
+        MEL.set_material_instance_parent(mi, paint_m)
+        MEL.set_material_instance_scalar_parameter_value(mi, "WhiteBias", float(spec.get("white_bias", 0.0)))
+        EAL.save_loaded_asset(mi, only_if_is_dirty=False)
+        slots = []
+        for i, sm in enumerate(mesh.get_editor_property("static_materials")):
+            slot = str(sm.get_editor_property("material_slot_name")).lower()
+            mat = mi if "paint" in slot else glass_m if "glass" in slot else det_m
+            mesh.set_material(i, mat)
+            slots.append(f"{slot}:{mat.get_name()}")
+        ns = mesh.get_editor_property("nanite_settings")
+        ns.enabled = True
+        mesh.set_editor_property("nanite_settings", ns)
+        try:
+            col = parked_box_collision(mesh, spec)
+        except Exception as e:
+            col = {"error": str(e)}
+        EAL.save_loaded_asset(mesh, only_if_is_dirty=False)
+        ext = mesh.get_bounds().box_extent
+        report[t] = {"mesh": mesh.get_path_name(), "slots": slots, "collision": col,
+                     "nanite": bool(mesh.get_editor_property("nanite_settings").enabled),
+                     "size_cm": [round(2 * ext.x), round(2 * ext.y), round(2 * ext.z)]}
+    (ROOT / "data/processed/common/props/ue_parked_report.json").write_text(json.dumps(report, indent=2))
+
+
+def parked_only(phase):
+    if phase == "parked_import":
+        tasks = []
+        for t, spec in PARKED.items():
+            name = f"parked_{t}"
+            if EAL.does_directory_exist(f"{DEST}/{name}"):
+                EAL.delete_directory(f"{DEST}/{name}")
+            k = unreal.AssetImportTask()
+            k.filename = str(ROOT / spec["file"])
+            k.destination_path = f"{DEST}/{name}"
+            k.destination_name = name
+            k.automated = True
+            k.replace_existing = True
+            k.save = True
+            tasks.append(k)
+        ASSETS.import_asset_tasks(tasks)
+    else:
+        setup_parked()
 
 
 main()

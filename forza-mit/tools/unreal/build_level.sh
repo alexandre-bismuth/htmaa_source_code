@@ -11,6 +11,8 @@ REGION="${1:-mit_core}"
 PROJ_DIR="$HERE/../../CambridgeRacer"
 UE="${UE_ROOT:-$HOME/UE_5.8}/Engine/Binaries/Mac/UnrealEditor-Cmd"
 MAP="/Game/Cambridge/Maps/$REGION"
+# (inputs checked before the old map is deleted below)
+[ -f "$HERE/../../data/processed/common/sky/sky.json" ] || { echo "FAILED: no sky.json (tools/blender/make_sky.py)" >&2; exit 1; }
 LOG="$HERE/../../data/processed/$REGION/meshes/build_level.log"
 rm -f "$PROJ_DIR/Content/Cambridge/Maps/$REGION.umap"
 rm -f "$PROJ_DIR/Content/Cambridge/Maps/$REGION.ini"   # converter-generated; regenerated each build

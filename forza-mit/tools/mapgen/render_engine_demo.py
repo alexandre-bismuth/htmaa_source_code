@@ -51,6 +51,8 @@ XFADE_SHAPE = 1.5        # cos/sin^1.5: between equal-power (incoherent) and lin
 LOAD_CURVE = 0.75
 RELOCK_GAIN = 0.15
 LAUNCH_RPM = 4000.0
+REVERSE_LAUNCH_RPM = 2200.0  # AImprezaSTi::ReverseSlipRPM (a gentle reverse start, no boost)
+ENGINE_LOOP_GAIN = 1.1      # engine loops +0.8 dB over the turbo / tyres (2026-10-26)
 LIMITER_RPM = 7900.0
 LIMITER_HZ = 14.0
 SHIFT_RPM_FALL = 4000.0
@@ -138,7 +140,8 @@ class Mixer:
         self.on = [Voice(waves[f"engine_on_{r}"], True, pitch_range) for r in self.rpms]
         self.off = [Voice(waves[f"engine_off_{r}"], True, pitch_range) for r in self.rpms]
         self.smooth_rpm, self.smooth_load, self.prev_throttle = IDLE_RPM, 1.0, 0.0
-        self.shift_rpm = self.limiter_clock = self.crackle = 0.0
+        self.shift_rpm = self.crackle = 0.0
+        self.limiter_frames, self.limiter_half = 0, 1
         self.last_drive_gear, self.next_pop = 0, 0
         self.was_shifting = self.was_cut = False
         self.last_blowoff = self.last_pop = -10.0
@@ -185,8 +188,9 @@ class Mixer:
             self.phase_err[i] = wrap_cycles(self.phase_err[i] + (self.voice_pitch[i] * rpms[i] - self.lock_rpm) / 120.0 * dt)
 
         rpm = rpm_engine
-        if gear in (1, -1) and rpm < LAUNCH_RPM and throttle > 0.05:
-            rpm = rpm + (LAUNCH_RPM - rpm) * throttle
+        slip_rpm = REVERSE_LAUNCH_RPM if gear < 0 else LAUNCH_RPM
+        if gear in (1, -1) and rpm < slip_rpm and throttle > 0.05:
+            rpm = rpm + (slip_rpm - rpm) * throttle
         shifting = gear == 0 and target_gear != 0
         if shifting and not self.was_shifting and target_gear > self.last_drive_gear and self.last_drive_gear >= 1:
             if boost > 0.45 and now - self.last_blowoff > 0.5:
@@ -203,8 +207,10 @@ class Mixer:
         if gear != 0:
             self.last_drive_gear = gear
         limiter = rpm >= LIMITER_RPM and throttle > 0.5
-        self.limiter_clock = self.limiter_clock + dt if limiter else 0.0
-        cut = limiter and (self.limiter_clock * LIMITER_HZ) % 1.0 < 0.5
+        self.limiter_frames = self.limiter_frames + 1 if limiter else 0
+        if self.limiter_frames == 1:     # whole frames, the half period set when it engages, as the game
+            self.limiter_half = max(1, round(0.5 / (LIMITER_HZ * dt)))
+        cut = limiter and (self.limiter_frames - 1) // self.limiter_half % 2 == 0
         if cut:
             rpm -= 250.0
             if not self.was_cut and self.rng.random() < 0.25 and now - self.last_pop > 0.07:
@@ -237,8 +243,8 @@ class Mixer:
                 p *= 1.0 - RELOCK_GAIN * self.phase_err[i]
             p = min(max(p, self.min_pitch), self.max_pitch)
             self.voice_pitch[i] = p
-            self.on[i].vol = self.master * w * on_gain
-            self.off[i].vol = self.master * w * off_gain
+            self.on[i].vol = self.master * ENGINE_LOOP_GAIN * w * on_gain
+            self.off[i].vol = self.master * ENGINE_LOOP_GAIN * w * off_gain
             self.on[i].pitch = self.off[i].pitch = p
             weights.append(w)
         self.lock_rpm = self.smooth_rpm
@@ -287,7 +293,7 @@ def torque(rpm):
 
 class Car:
     def __init__(self):
-        self.rpm, self.v, self.boost = IDLE_RPM, 0.0, 0.0
+        self.rpm, self.v, self.boost, self.pressure = IDLE_RPM, 0.0, 0.0, 0.0
         self.gear = self.target_gear = 0
         self.change_left = 0.0
 
@@ -311,10 +317,14 @@ class Car:
         if self.gear < 0:
             throttle, brake = max(throttle, brake), 0.0
         eng_rpm = self.rpm
-        if self.gear in (1, -1) and self.rpm < LAUNCH_RPM and throttle > 0.05:
-            eng_rpm = self.rpm + (LAUNCH_RPM - self.rpm) * throttle
-        tau = np.interp(eng_rpm, [2000, 4500], [1.1, 0.35]) if throttle > self.boost else 0.15
-        self.boost += (throttle - self.boost) * (1 - math.exp(-dt / tau))
+        slip_rpm = REVERSE_LAUNCH_RPM if self.gear < 0 else LAUNCH_RPM
+        if self.gear in (1, -1) and self.rpm < slip_rpm and throttle > 0.05:
+            eng_rpm = self.rpm + (slip_rpm - self.rpm) * throttle
+        target = 0.0 if self.gear < 0 else throttle       # no boost in reverse
+        tau = np.interp(eng_rpm, [2000, 4500], [1.1, 0.35]) if target > self.boost else 0.15
+        self.boost += (target - self.boost) * (1 - math.exp(-dt / tau))
+        x = min(max((eng_rpm - 1800.0) / 1800.0, 0.0), 1.0)
+        self.pressure = self.boost * x * x * (3.0 - 2.0 * x)  # what the gauge and the sound get (GetBoost)
         reverse_limit = min(max((45.0 - self.v * 3.6) / 5.0, 0.0), 1.0) if self.gear < 0 else 1.0
         tq = torque(eng_rpm) * (0.55 + 0.45 * self.boost) * throttle * reverse_limit
         if self.gear == 0:      # free revving (neutral or mid-shift): part throttle is plenty unloaded
@@ -347,7 +357,7 @@ def drive():
     def tick(throttle, brake=0.0, auto=False):
         nonlocal t
         car.step(TICK, throttle, brake, auto)
-        out.append((t, car.rpm, throttle, car.boost, car.gear, car.target_gear, car.v))
+        out.append((t, car.rpm, throttle, car.pressure, car.gear, car.target_gear, car.v))
         t += TICK
 
     def hold(seconds, throttle=0.0, brake=0.0, auto=False, stop=None):
@@ -389,7 +399,7 @@ def drive_reverse():
         end = t + seconds
         while t < end - 1e-9:
             car.step(TICK, 0.0, brake, False)
-            out.append((t, car.rpm, 0.0, car.boost, car.gear, car.target_gear, car.v, brake))
+            out.append((t, car.rpm, 0.0, car.pressure, car.gear, car.target_gear, car.v, brake))
             t += TICK
 
     hold(2.0, 0.0)

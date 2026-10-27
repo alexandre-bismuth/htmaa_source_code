@@ -8,9 +8,19 @@ Model (sapling / Weber-Penn style, with a crown envelope):
 Every level >= 1 grows step by step with wobble + tropism and stops when it leaves the species'
 crown envelope (a height profile of radii with low-frequency lumps), so the silhouette is per species.
 
-Leaves are real opaque polygons (4-10 triangles each, species outline), placed along twigs in
+Leaves are real opaque polygons (4-12 triangles each, species outline), placed along twigs in
 alternate/opposite/spur patterns, facing up/outward, with a midrib fold and a droop along the blade.
 Everything is returned as numpy arrays; build_trees.py turns them into a Blender mesh.
+
+GPU cost (Nanite, measured 2026-10-26 in UE: the canopies are the biggest raster cost of the map). Nanite renders distant
+canopies as ~pixel-sized triangles whose number follows the leaf AREA (PreserveArea LODs), and near trees at full detail
+(their triangle count). So: fewer, larger leaves (leaf_count_scale, same total area), leaves hidden by the rest of the crown
+removed (prune_vis, leaf_visibility: voxel transmittance over 32 directions; the rest grown back to the same projected
+coverage), leaf-bearing twigs as one straight bark segment and every 2nd ring on the branches (twig_rings,
+bark_keep_every). A twig's leaves form one connected spray (leaf_connect: hairline ribbon along the twig).
+Honey-locust compound leaves are connected fronds (2 triangles per leaflet pair).
+UV0.x of every leaf vertex = autumn_rank (patchy order of turning; the UE leaf material colours the leaves below a
+per-tree random amount, see tools/unreal/import_props.py leaf_master).
 """
 import math
 
@@ -300,11 +310,26 @@ def tube_mesh(branches, sp, bark_size, rng):
     su, sv = bark_size
     env_flare = sp.get("flare", 0.35)
     lobes = sp.get("buttress_lobes", 5)
+    nlev = len(sp["levels"]) - 1
+    keep_every = {int(k): v for k, v in sp.get("bark_keep_every", {}).items()}   # level -> keep every k-th ring
     for b in branches:
         P, R = b.pts, b.rad
+        k = keep_every.get(b.level, 1)
+        if b.level == nlev and sp.get("twig_rings"):
+            # leaf-bearing twigs (4-8 mm, under the leaves): a few straight segments are enough
+            idx = np.unique(np.linspace(0, len(P) - 1, min(len(P), sp["twig_rings"])).round().astype(int))
+            P, R = P[idx], R[idx]
+        elif k > 1 and len(P) > 2:
+            idx = np.unique(np.r_[np.arange(0, len(P) - 1, k), len(P) - 1])
+            P, R = P[idx], R[idx]
+        if b.level == 0 and b.stem and sp.get("root_sink", 0.0) > 0:
+            # run the trunk further into the ground (sloped curbs / grass: no floating flare)
+            P = np.vstack([P[:1] - unit(P[1] - P[0]) * sp["root_sink"], P])
+            R = np.r_[R[0], R]
         m = len(P)
         if m < 2:
             continue
+        sl = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
         T = np.zeros_like(P)
         T[1:-1] = P[2:] - P[:-2]
         T[0] = P[1] - P[0]
@@ -335,12 +360,12 @@ def tube_mesh(branches, sp, bark_size, rng):
         ring_dir = ct[None, :, None] * nrm[:, None, :] + st[None, :, None] * bin_[:, None, :]
         verts = P[:, None, :] + rad[..., None] * ring_dir
         # radial normals (lean slightly along the taper)
-        dr = np.gradient(R) / np.maximum(np.gradient(b.s), 1e-6)
+        dr = np.gradient(R) / np.maximum(np.gradient(sl), 1e-6) if m > 2 else np.full(m, (R[-1] - R[0]) / max(sl[-1], 1e-6))
         nn = unit(ring_dir - dr[:, None, None] * T[:, None, :])
         ku = max(1, round(2 * math.pi * r0 / su))
         v0 = rng.uniform(0, 1)
         uu = np.repeat((th / (2 * math.pi) * ku)[None, :], m, 0)
-        vv = np.repeat((v0 + b.s / sv)[:, None], S + 1, 1)
+        vv = np.repeat((v0 + sl / sv)[:, None], S + 1, 1)
         idx = np.arange(m * (S + 1)).reshape(m, S + 1) + nv
         q0, q1 = idx[:-1, :-1], idx[:-1, 1:]
         q2, q3 = idx[1:, 1:], idx[1:, :-1]
@@ -357,7 +382,7 @@ def tube_mesh(branches, sp, bark_size, rng):
             V.append(P[-1:] + T[-1:] * R[-1] * 0.6)
             A.append(R[-1:])
             N.append(T[-1:])
-            UV.append(np.array([[0.5, v0 + b.s[-1] / sv]]))
+            UV.append(np.array([[0.5, v0 + sl[-1] / sv]]))
             ring = idx[-1]
             F.append(np.stack([ring[:-1], ring[1:], np.full(S, nv)], -1))
             nv += 1
@@ -406,11 +431,79 @@ def leaf_template(name, width):
     return p, np.array(tris, dtype=np.int32)
 
 
+def fib_dirs(n):
+    """n roughly uniform unit directions (Fibonacci sphere)."""
+    i = np.arange(n) + 0.5
+    z = 1 - 2 * i / n
+    r = np.sqrt(1 - z * z)
+    a = math.pi * (1 + 5 ** 0.5) * i
+    return np.stack([r * np.cos(a), r * np.sin(a), z], -1)
+
+
+def leaf_visibility(C, A, cell=0.3, ndir=32):
+    """Mean transmittance from each leaf centre C (n, 3) to outside the crown over ndir directions, through a
+    voxel grid of leaf area density (A: leaf areas, m2; extinction = 0.5 x area density, randomly oriented
+    leaves). ~0 = hidden from every direction (and so from the sun: it neither shows nor shades anything)."""
+    lo = C.min(0) - 2 * cell
+    dims = np.ceil((C.max(0) + 2 * cell - lo) / cell).astype(int) + 1
+    grid = np.zeros(dims)
+    np.add.at(grid, tuple(((C - lo) / cell).astype(int).T), A)
+    sigma = 0.5 * grid / cell ** 3
+    step = 0.5 * cell
+    nsteps = int(np.linalg.norm(dims * cell) / step) + 1
+    vis = np.zeros(len(C))
+    for d in fib_dirs(ndir):
+        tau = np.zeros(len(C))
+        p = C + d * cell                     # start one cell out: the leaf's own cell would shade itself
+        alive = np.ones(len(C), bool)
+        for _ in range(nsteps):
+            q = ((p - lo) / cell).astype(int)
+            alive &= np.all((q >= 0) & (q < dims), 1)
+            if not alive.any():
+                break
+            qa = q[alive]
+            tau[alive] += sigma[qa[:, 0], qa[:, 1], qa[:, 2]] * step
+            p += d * step
+        vis += np.exp(-tau)
+    return vis / ndir
+
+
+def proj_tau(C, A, N, cell=0.15):
+    """Leaf optical depth maps (Beer-Lambert, projected leaf area per bin) seen from the two sides and from above."""
+    out = []
+    for d in (np.array([1.0, 0, 0]), np.array([0, 1.0, 0]), np.array([0, 0, 1.0])):
+        u = np.array([0, 1.0, 0]) if d[0] else np.array([1.0, 0, 0])
+        w = np.cross(d, u)
+        ij = np.floor(np.stack([C @ u, C @ w], 1) / cell).astype(int) + 200
+        g = np.zeros((400, 400))
+        np.add.at(g, (np.clip(ij[:, 0], 0, 399), np.clip(ij[:, 1], 0, 399)), A * np.abs(N @ d))
+        out.append(g / cell ** 2)
+    return out
+
+
+def coverage(taus, masks, gain=1.0):
+    return float(np.mean([(1 - np.exp(-t[m] * gain)).mean() for t, m in zip(taus, masks)]))
+
+
+def tpl_area(tpl, tris):
+    a = tpl[tris[:, 1]] - tpl[tris[:, 0]]
+    b = tpl[tris[:, 2]] - tpl[tris[:, 0]]
+    return float(np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).sum() * 0.5)
+
+
 def leaf_mesh(gen, sp, rng):
-    """Place leaves on the leaf-bearing branches. Returns arrays like tube_mesh plus colours."""
+    """Place leaves on the leaf-bearing branches. Returns arrays like tube_mesh plus colours.
+
+    Leaves on one twig form ONE connected surface (a spray): every leaf's base vertex is its node on the twig axis,
+    and consecutive nodes are joined by a hairline ribbon inside the twig. Nanite can then simplify a twig's leaves
+    together (merging them into the spray's outline) instead of only dropping and inflating separate leaf islands.
+    leaf_count_scale < 1 makes fewer, larger leaves (same total area); prune_vis drops leaves that are hidden from
+    every direction by the rest of the crown (leaf_visibility)."""
     env = gen.env
     LS = sp["leaf"]
     min_z = sp["min_leaf_z"]
+    connect = sp.get("leaf_connect", True)
+    cscale = sp.get("leaf_count_scale", 1.0)
     # ---- collect attachment points along bearing branches -----------------------------------
     nlev = len(sp["levels"]) - 1
     bearing = []
@@ -422,11 +515,12 @@ def leaf_mesh(gen, sp, rng):
     total = sum(b.length * (t1 - t0) for b, t0, t1 in bearing)
     per_node = LS.get("per_node", 1)
     tip_n = LS.get("tip_cluster", 0)
-    target = sp["leaf_target"]
+    target = sp["leaf_target"] * cscale
     n_tips = len(bearing)
     spacing = total * per_node / max(target - n_tips * tip_n, target * 0.3)
-    P, T, ROLL, TIPF = [], [], [], []
-    for b, t0, t1 in bearing:
+    P, T, ROLL, TIPF, NODE, BR = [], [], [], [], [], []
+    node_p, node_b = [], []
+    for bi, (b, t0, t1) in enumerate(bearing):
         L = b.length * (t1 - t0)
         n = int(L / spacing)
         if n > 0:
@@ -443,17 +537,27 @@ def leaf_mesh(gen, sp, rng):
                     T.append(d)
                     ROLL.append(r + j * math.pi * 2 / per_node)
                     TIPF.append(0.0)
+                    NODE.append(len(node_p))
+                    BR.append(bi)
+                node_p.append(p)
+                node_b.append(bi)
         # terminal cluster
-        p, d, _ = b.at(1.0)
-        for j in range(tip_n):
-            P.append(p)
-            T.append(d)
-            ROLL.append(j * 2 * math.pi / tip_n + rng.normal() * 0.3)
-            TIPF.append(1.0)
+        if tip_n:
+            p, d, _ = b.at(1.0)
+            for j in range(tip_n):
+                P.append(p)
+                T.append(d)
+                ROLL.append(j * 2 * math.pi / tip_n + rng.normal() * 0.3)
+                TIPF.append(1.0)
+                NODE.append(len(node_p))
+                BR.append(bi)
+            node_p.append(p)
+            node_b.append(bi)
     P, T = np.array(P), unit(np.array(T))
-    ROLL, TIPF = np.array(ROLL), np.array(TIPF)
+    ROLL, TIPF, NODE, BR = np.array(ROLL), np.array(TIPF), np.array(NODE), np.array(BR)
+    node_p, node_b = np.array(node_p), np.array(node_b)
     keep = P[:, 2] >= min_z
-    P, T, ROLL, TIPF = P[keep], T[keep], ROLL[keep], TIPF[keep]
+    P, T, ROLL, TIPF, NODE, BR = P[keep], T[keep], ROLL[keep], TIPF[keep], NODE[keep], BR[keep]
     n = len(P)
     # ---- orientation ---------------------------------------------------------------------------
     A = np.cross(T, UP)
@@ -466,89 +570,193 @@ def leaf_mesh(gen, sp, rng):
     beta = np.where(TIPF > 0, np.radians(LS.get("tip_angle", 30.0)) + rng.normal(0, 0.15, n), beta)
     D = unit(np.cos(beta)[:, None] * T + np.sin(beta)[:, None] * radial)
     D = unit(D - UP * LS.get("droop", 0.3))
-    out = P.copy()
-    out[:, 0] -= env.cx
-    out[:, 1] -= env.cy
-    out[:, 2] = 0
-    out = unit(out)
     cen = np.array([env.cx, env.cy, env.zb + 0.5 * (env.H - env.zb)])
     out3 = unit((P - cen) / np.array([env.R, env.R, 0.5 * (env.H - env.zb) + 1e-3]))
     npref = unit(UP * LS.get("face_up", 1.0) + out3 * LS.get("face_out", 0.6) + rng.normal(0, 0.45, (n, 3)))
     Nl = unit(npref - (npref * D).sum(1, keepdims=True) * D)
     Sd = np.cross(Nl, D)
-    size = LS["length"] * rng.uniform(0.75, 1.2, n) * sp.get("leaf_scale", 1.0)
+    size = LS["length"] * rng.uniform(0.75, 1.2, n) * sp.get("leaf_scale", 1.0) / math.sqrt(cscale)
     # sunlit outer leaves are smaller, shade leaves bigger
     dep = env.depth(P)
     size *= 1.0 + 0.25 * np.clip(dep / sp["shell"], 0, 1)
-    base = P + D * (LS.get("petiole", 0.25) * size)[:, None]
-    # ---- geometry --------------------------------------------------------------------------------
-    if LS["shape"] == "pinnate":
-        return pinnate_leaves(base, D, Sd, Nl, size, LS, rng, env, sp, out3, dep)
-    tpl, tris = leaf_template(LS["shape"], LS.get("width", 1.0))
-    k = len(tpl)
-    x = tpl[None, :, 0] * size[:, None]
-    y = tpl[None, :, 1] * size[:, None]
-    bend = LS.get("bend", 0.18) * rng.uniform(0.4, 1.4, n)
-    fold = LS.get("fold", 0.15) * rng.uniform(0.5, 1.3, n)
-    z = -bend[:, None] * (tpl[None, :, 0] ** 2) * size[:, None] + fold[:, None] * np.abs(y)
-    # random twist about the blade axis
-    tw = rng.normal(0, 0.25, n)
-    ys = y * np.cos(tw)[:, None] - z * np.sin(tw)[:, None]
-    zs = y * np.sin(tw)[:, None] + z * np.cos(tw)[:, None]
-    V = base[:, None, :] + x[..., None] * D[:, None, :] + ys[..., None] * Sd[:, None, :] + \
-        zs[..., None] * Nl[:, None, :]
-    F = (tris[None, :, :] + (np.arange(n) * k)[:, None, None]).reshape(-1, 3)
-    uv = np.stack([0.5 + tpl[:, 1] / (2 * max(LS.get("width", 1.0), 0.3) * 1.1), tpl[:, 0]], -1)
-    UV = np.tile(uv, (n, 1))
-    # shading normal: blend of the leaf's own normal and the crown's outward normal
-    so = LS.get("normal_out", 0.55)
-    Nv = unit(Nl * (1 - so) + out3 * so + UP * 0.15)
-    Nv = np.repeat(Nv, k, 0) + 0.12 * np.sign(tpl[:, 1])[None, :, None].repeat(n, 0).reshape(-1, 1) * \
-        np.repeat(Sd, k, 0)
-    Nv = unit(Nv)
+    pet = LS.get("petiole", 0.25) * (LS.get("petiole_connected", 0.5) if connect else 1.0)
+    base = P + D * (pet * size)[:, None]
+    pinnate = LS["shape"] == "pinnate"
+    if pinnate:
+        tpl, tris = leaf_template("leaflet", LS.get("width", 0.4))
+        area = 2 * LS.get("pairs", 8) * tpl_area(tpl, tris) * (LS["leaflet"] * sp.get("leaf_scale", 1.0)) ** 2 \
+            * np.ones(n) / cscale
+    else:
+        tpl, tris = leaf_template(LS["shape"], LS.get("width", 1.0))
+        area = tpl_area(tpl, tris) * size ** 2
+    # ---- hidden-leaf pruning -------------------------------------------------------------------
+    stats = {"placed": int(n)}
+    pv = sp.get("prune_vis")
+    if pv:
+        vis = leaf_visibility(base + D * (0.5 * size)[:, None], area)
+        pkeep = np.clip((vis - pv[0]) / max(pv[1] - pv[0], 1e-6), 0, 1)
+        k2 = rng.random(n) < pkeep
+        stats.update(pruned=int((~k2).sum()), vis_pct=[round(float(x), 3) for x in np.percentile(vis, [5, 10, 25, 50])])
+        # the remaining (outer) leaves grow a little so the crown's projected coverage (sides + top) stays the same
+        cen = base + D * (0.5 * size)[:, None]
+        t0 = proj_tau(cen, area, Nl)
+        masks = [t > 0 for t in t0]
+        c0 = coverage(t0, masks)
+        t1 = proj_tau(cen[k2], area[k2], Nl[k2])
+        lo, hi = 1.0, 2.0
+        for _ in range(12):
+            g = 0.5 * (lo + hi)
+            lo, hi = (g, hi) if coverage(t1, masks, g) < c0 else (lo, g)
+        grow = min(math.sqrt(0.5 * (lo + hi)), sp.get("prune_grow_max", 1.15),
+                   math.sqrt(area.sum() / max(area[k2].sum(), 1e-9)))      # never more leaf area than before
+        stats.update(area_kept=round(float(area[k2].sum() * grow ** 2 / area.sum()), 3), grow=round(grow, 3))
+        P, T, D, Nl, Sd, size, dep, base, out3, NODE, BR, TIPF = (a[k2] for a in (
+            P, T, D, Nl, Sd, size, dep, base, out3, NODE, BR, TIPF))
+        n = len(P)
+        size = size * grow
+        base = P + D * (pet * size)[:, None]
     col, ao = leaf_colors(n, P, dep, sp, rng, env)
-    return {"verts": V.reshape(-1, 3), "tris": F.astype(np.int32), "uv": UV, "normals": Nv,
-            "color": np.repeat(col, k, 0), "ao": np.repeat(ao, k, 0), "count": n}
-
-
-def pinnate_leaves(base, D, Sd, Nl, size, LS, rng, env, sp, out3, dep):
-    """Compound leaves: leaflet pairs along a rachis (honey locust)."""
-    n = len(base)
-    pairs = LS.get("pairs", 8)
-    tpl, tris = leaf_template("leaflet", LS.get("width", 0.4))
-    k = len(tpl)
-    ts = (np.arange(pairs) + 0.6) / (pairs + 0.3)
-    # rachis arches down
-    arch = LS.get("bend", 0.2)
-    lf = LS["leaflet"] * sp.get("leaf_scale", 1.0)
-    allV, allN, allUV = [], [], []
+    rank = autumn_rank(P, BR, env, rng)
     so = LS.get("normal_out", 0.55)
     Nv_leaf = unit(Nl * (1 - so) + out3 * so + UP * 0.15)
-    for j, t in enumerate(ts):
-        c = base + D * (t * size)[:, None] - Nl * (arch * t * t * size)[:, None]
-        for sgn in (-1.0, 1.0):
+    # ---- geometry --------------------------------------------------------------------------------
+    if pinnate:
+        Vl, Fl, UVl, Nvl, kv, root = pinnate_fronds(base, D, Sd, Nl, size, LS, rng, sp, cscale, Nv_leaf)
+        cmul = np.ones((n, kv))
+        cmul[:, 2 * LS.get("pairs", 8) + 1:] = rng.uniform(0.86, 1.1, (n, kv - 2 * LS.get("pairs", 8) - 1))
+    else:
+        k = len(tpl)
+        x = tpl[None, :, 0] * size[:, None]
+        y = tpl[None, :, 1] * size[:, None]
+        bend = LS.get("bend", 0.18) * rng.uniform(0.4, 1.4, n)
+        fold = LS.get("fold", 0.15) * rng.uniform(0.5, 1.3, n)
+        z = -bend[:, None] * (tpl[None, :, 0] ** 2) * size[:, None] + fold[:, None] * np.abs(y)
+        # random twist about the blade axis
+        tw = rng.normal(0, 0.25, n)
+        ys = y * np.cos(tw)[:, None] - z * np.sin(tw)[:, None]
+        zs = y * np.sin(tw)[:, None] + z * np.cos(tw)[:, None]
+        Vl = base[:, None, :] + x[..., None] * D[:, None, :] + ys[..., None] * Sd[:, None, :] + \
+            zs[..., None] * Nl[:, None, :]
+        Fl = np.broadcast_to(tris, (n,) + tris.shape)
+        uv = np.stack([np.zeros(k), tpl[:, 0]], -1)
+        UVl = np.broadcast_to(uv, (n, k, 2)).copy()
+        # shading normal: blend of the leaf's own normal and the crown's outward normal
+        Nvl = Nv_leaf[:, None, :] + 0.12 * np.sign(tpl[:, 1])[None, :, None] * Sd[:, None, :]
+        Nvl = unit(Nvl)
+        kv, root = k, 0
+        cmul = np.ones((n, kv))
+    UVl[..., 0] = rank[:, None]
+    stats["leaves"] = int(n)
+    if not connect:
+        F = (Fl + (np.arange(n) * kv)[:, None, None]).reshape(-1, 3)
+        return {"verts": Vl.reshape(-1, 3), "tris": F.astype(np.int32), "uv": UVl.reshape(-1, 2),
+                "normals": Nvl.reshape(-1, 3), "color": (col[:, None, :] * cmul[..., None]).reshape(-1, 3),
+                "ao": np.repeat(ao, kv, 0),
+                "count": n * (2 * LS.get("pairs", 8) if pinnate else 1), "stats": stats}
+    # connected sprays: the leaf's root vertex (template vertex 0 / rachis start) is replaced by its node vertex
+    used, inv = np.unique(NODE, return_inverse=True)
+    ns = len(used)
+    # node -> first leaf at it (its colour / normal / rank for the shared vertex)
+    first = np.full(ns, -1)
+    first[inv[::-1]] = np.arange(n)[::-1]
+    others = [i for i in range(kv) if i != root]
+    remap = np.zeros(kv, np.int64)
+    remap[others] = np.arange(kv - 1)
+    Fv = remap[Fl] + ns + (np.arange(n) * (kv - 1))[:, None, None]
+    Fv = np.where(Fl == root, inv[:, None, None], Fv)
+    V = [node_p[used], Vl[:, others].reshape(-1, 3)]
+    N = [Nv_leaf[first], Nvl[:, others].reshape(-1, 3)]
+    UV = [np.stack([rank[first], np.zeros(ns)], -1), UVl[:, others].reshape(-1, 2)]
+    C = [col[first], (col[:, None, :] * cmul[:, others, None]).reshape(-1, 3)]
+    AO = [ao[first], np.repeat(ao, kv - 1, 0)]
+    F = [Fv.reshape(-1, 3)]
+    # hairline ribbon between consecutive nodes of one twig (inside the bark tube: no visible area)
+    nb = node_b[used]
+    order = np.lexsort((used, nb))          # nodes are numbered along each twig
+    a_, b_ = order[:-1], order[1:]
+    same = nb[a_] == nb[b_]
+    a_, b_ = a_[same], b_[same]
+    vb = len(V[0]) + len(V[1])
+    off = unit(np.cross(node_p[used][b_] - node_p[used][a_], UP) + 1e-6) * 0.002
+    V.append(node_p[used][a_] + off)
+    N.append(Nv_leaf[first][a_])
+    UV.append(UV[0][a_])
+    C.append(col[first][a_])
+    AO.append(ao[first][a_])
+    F.append(np.stack([a_, b_, vb + np.arange(len(a_))], -1))
+    stats["sprays"] = int(len(np.unique(nb)))
+    return {"verts": np.concatenate(V), "tris": np.concatenate(F).astype(np.int32), "uv": np.concatenate(UV),
+            "normals": unit(np.concatenate(N)), "color": np.concatenate(C), "ao": np.concatenate(AO),
+            "count": n * (2 * LS.get("pairs", 8) if pinnate else 1), "stats": stats}
+
+
+def pinnate_fronds(base, D, Sd, Nl, size, LS, rng, sp, cscale, Nv_leaf):
+    """Compound leaves (honey locust) as connected fronds: rachis vertices c_0..c_2p (c_0 = the leaf root); leaflet
+    pair j = one triangle per side on the rachis segments (2j, 2j+1) and (2j+1, 2j+2) (alternate, 2 triangles
+    per pair). Area ~0.8x the old separate kite leaflets at the same count (late October: thinning crowns).
+    Returns per-leaf arrays (n, kv, ...) and the root vertex index."""
+    n = len(base)
+    pairs = LS.get("pairs", 8)
+    arch = LS.get("bend", 0.2)
+    lf = LS["leaflet"] * sp.get("leaf_scale", 1.0) / math.sqrt(cscale) * LS.get("frond_leaflet", 1.07)
+    nr = 2 * pairs + 1
+    ts = np.linspace(0.0, 1.0, nr)
+    rach = base[:, None, :] + D[:, None, :] * (ts[None, :] * size[:, None])[..., None] - \
+        Nl[:, None, :] * (arch * ts[None, :] ** 2 * size[:, None])[..., None]
+    tips, F = [], []
+    for j in range(pairs):
+        for sgn, (i0, i1) in ((-1.0, (2 * j, 2 * j + 1)), (1.0, (2 * j + 1, 2 * j + 2))):
+            m = 0.5 * (rach[:, i0] + rach[:, i1])
             ang = math.radians(LS.get("leaflet_angle", 70.0)) + rng.normal(0, 0.12, n)
             dl = unit(np.cos(ang)[:, None] * D + sgn * np.sin(ang)[:, None] * Sd + Nl * rng.normal(0, 0.2, (n, 1)))
-            sl = np.cross(Nl, dl)
-            ln = lf * rng.uniform(0.8, 1.15, n) * (1.0 - 0.3 * abs(t - 0.5))
-            x = tpl[None, :, 0] * ln[:, None]
-            y = tpl[None, :, 1] * ln[:, None]
-            V = c[:, None, :] + x[..., None] * dl[:, None, :] + y[..., None] * sl[:, None, :]
-            allV.append(V)
-            allN.append(np.repeat(Nv_leaf[:, None, :], k, 1))
-            allUV.append(np.repeat(np.stack([0.5 + tpl[:, 1], tpl[:, 0]], -1)[None], n, 0))
-        # terminal leaflet pair counts already; nothing else
-    m = len(allV)                                     # leaflets per compound leaf
-    V = np.stack(allV, 1).reshape(n, m * k, 3)
-    Nn = np.stack(allN, 1).reshape(n, m * k, 3)
-    UV = np.stack(allUV, 1).reshape(n, m * k, 2)
-    F = (tris[None, None] + (np.arange(m) * k)[None, :, None, None] +
-         (np.arange(n) * m * k)[:, None, None, None]).reshape(-1, 3)
-    col, ao = leaf_colors(n, base, dep, sp, rng, env)
-    # a little per-leaflet variation
-    colv = np.repeat(col, m * k, 0) * rng.uniform(0.9, 1.08, (n * m, 1)).repeat(k, 0)
-    return {"verts": V.reshape(-1, 3), "tris": F.astype(np.int32), "uv": UV.reshape(-1, 2),
-            "normals": Nn.reshape(-1, 3), "color": colv, "ao": np.repeat(ao, m * k, 0), "count": n * m}
+            tj = (j + 0.5) / pairs
+            ln = lf * rng.uniform(0.8, 1.15, n) * (1.0 - 0.3 * abs(tj - 0.5))
+            tips.append(m + dl * ln[:, None])
+            F.append((i0, nr + len(tips) - 1, i1))
+    V = np.concatenate([rach, np.stack(tips, 1)], 1)            # (n, 2 pairs + 1 + 2 pairs, 3)
+    F = np.broadcast_to(np.array(F, np.int64), (n, 2 * pairs, 3))
+    kv = V.shape[1]
+    Nn = np.repeat(Nv_leaf[:, None, :], kv, 1)
+    UV = np.zeros((n, kv, 2))
+    UV[:, :nr, 1] = ts
+    return V, F, UV, Nn, kv, 0
+
+
+def value_noise(P, cell, rng):
+    """Smooth 3D value noise in [0, 1] (random lattice, trilinear with smoothstep), for patchy colour."""
+    q = P / cell
+    i0 = np.floor(q).astype(np.int64)
+    f = q - i0
+    f = f * f * (3 - 2 * f)
+    lat = rng.random((64, 64, 64))
+    out = np.zeros(len(P))
+    for dx in (0, 1):
+        for dy in (0, 1):
+            for dz in (0, 1):
+                w = (f[:, 0] if dx else 1 - f[:, 0]) * (f[:, 1] if dy else 1 - f[:, 1]) * (f[:, 2] if dz else 1 - f[:, 2])
+                out += w * lat[(i0[:, 0] + dx) % 64, (i0[:, 1] + dy) % 64, (i0[:, 2] + dz) % 64]
+    return out
+
+
+def autumn_rank(P, BR, env, rng):
+    """Per-leaf 0..1 order in which leaves turn (UV0.x; the leaf material turns leaves with rank < the tree's
+    per-instance autumn amount). One value per twig (a twig's spray is one connected Nanite surface: a value that
+    varied along it would be an attribute gradient for the simplifier; between twigs it jumps), from smooth noise at
+    the twig (patches of a few metres: whole limbs turn together), the sunny top and outside of the crown first."""
+    nb = int(BR.max()) + 1 if len(BR) else 1
+    cnt = np.maximum(np.bincount(BR, minlength=nb), 1)
+    C = np.stack([np.bincount(BR, P[:, i], minlength=nb) for i in range(3)], 1) / cnt[:, None]
+    patch = value_noise(C, 1.8, rng)
+    hf = np.clip(env.hfrac(C[:, 2]), 0, 1)
+    rho = np.clip(env.rho(C[:, 0], C[:, 1]) / max(env.R, 1e-3), 0, 1)
+    rt = 0.55 * patch + 0.2 * (1 - hf) + 0.12 * (1 - rho) + 0.13 * rng.random(nb)
+    r = rt[BR]
+    out = np.empty(len(P))
+    order = np.argsort(r, kind="stable")
+    out[order] = (np.arange(len(P)) + 0.5) / max(len(P), 1)
+    # equal values (one twig) -> one rank: the twig's mean
+    tw = np.bincount(BR, out, minlength=nb) / cnt
+    return tw[BR]
 
 
 def leaf_colors(n, P, dep, sp, rng, env):
@@ -586,4 +794,7 @@ def generate(sp, seed, bark_size):
     tw = np.clip((bark["radius"] - 0.008) / 0.035, 0, 1)[:, None]
     tc = np.array(sp.get("twig_tint", (0.72, 0.66, 0.6)))
     bark["tint"] = (tc * (1 - tw) + tw) * bark["ao"][:, None]
+    # soil splash / damp bark at the foot of the trunk (grounds it on the sidewalk)
+    zf = np.clip(bark["verts"][:, 2] / sp.get("foot_band", 0.6), 0, 1)[:, None]
+    bark["tint"] = bark["tint"] * (np.array(sp.get("foot_tint", (0.74, 0.71, 0.66))) * (1 - zf) + zf)
     return gen, bark, leaves

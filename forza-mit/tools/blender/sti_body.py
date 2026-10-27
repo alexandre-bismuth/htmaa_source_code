@@ -1,6 +1,8 @@
 """STi body shell: a quad control cage (left half, y >= 0) + Mirror + Subdivision Surface with creases.
 
-The cage is a loft: STATIONS along x, and 14 ROWS around each half section (top centre -> floor).
+The cage is a loft: STATIONS along x, and 16 ROWS around each half section (top centre -> floor centre), so the
+mirrored cage is a closed tube: the underside is a real floor pan (rows 13..15, zone 4) that meets the rockers and
+the bumper undersides, and the wheel-arch cutter walls are kept as closed wheel wells (zone 5).
 Row meaning in the cabin zone (cowl..deck):
   0 centre top (roof / windshield / backlight centre line)     7 upper door (below the belt)
   1 top mid                                                     8 shoulder crease (character line)
@@ -8,11 +10,13 @@ Row meaning in the cabin zone (cowl..deck):
   3 A-pillar crown / drip rail / C-pillar                      10 lower door
   4 side glass top                                             11 side-skirt crease
   5 side glass mid                                             12 rocker bottom
-  6 belt (side glass bottom)                                   13 floor edge
+  6 belt (side glass bottom)                                   13 rocker inner edge (paint ends here)
+                                                               14 floor pan outer edge (top of the inner sill wall)
+                                                               15 floor pan centre line
 In the hood and deck zones rows 3..6 roll over the fender / quarter top. At both ends every row wraps
 around the plan-view corner to the centre plane (superellipse), which closes the nose and the tail
 across the mirror plane without poles.
-Face attribute "zone": 0 paint, 1 glass, 2 black trim (B-pillar).
+Face attribute "zone": 0 paint, 1 glass, 2 black trim (B-pillar), 4 floor pan (underseal), 5 wheel-well walls.
 """
 import math
 
@@ -22,7 +26,7 @@ import numpy as np
 
 from sti_common import G, pchip, tab, new_object
 
-NROW = 14
+NROW = 16
 X_COWL, X_HEADER, X_BF, X_BR, X_ROOF_END, X_GLASS_END, X_DECK = 0.95, 0.26, -0.12, -0.22, -0.92, -1.05, -1.60
 X_START_F, X_START_R = 1.93, -1.95
 MAIN = [1.93, 1.78, 1.62, 1.46, 1.30, 1.14, 1.02, X_COWL, 0.84, 0.70, 0.55, 0.40, X_HEADER, 0.10, X_BF, X_BR,
@@ -64,16 +68,21 @@ Y11 = [(1.93, 0.800), (1.62, 0.838), (1.30, 0.846), (0.95, 0.848), (0.0, 0.848),
        (-1.6, 0.842), (-1.95, 0.820)]
 H11 = [(1.93, 0.290), (1.62, 0.272), (1.0, 0.270), (0.0, 0.268), (-1.0, 0.270), (-1.6, 0.292), (-1.95, 0.305)]
 H12 = [(1.93, 0.250), (1.62, 0.215), (1.0, 0.196), (-1.0, 0.196), (-1.6, 0.240), (-1.95, 0.272)]
+# floor pan height (rows 14, 15): ~4.5 cm above the rocker bottom, so the underbody mechanicals ('under': sump,
+# gearbox, tank, diff, arms, exhaust, silencer) hang below it as on the real car; kept >= 2.5 cm under the
+# lower intake at the nose (the intake cutter must not reach the pan)
+HF = [(1.93, 0.262), (1.62, 0.255), (1.30, 0.248), (1.0, 0.241), (-1.0, 0.241), (-1.3, 0.255), (-1.6, 0.275),
+      (-1.95, 0.295)]
 
 # nose / tail tips (x, h) per row: the centre-plane profile of the front and rear faces
 TIP_F = [(2.066, 0.802), (2.088, 0.778), (2.108, 0.752), (2.124, 0.726), (2.138, 0.700), (2.152, 0.672),
          (2.165, 0.640), (2.176, 0.604), (2.188, 0.556), (2.196, 0.486), (2.197, 0.404), (2.182, 0.312),
-         (2.142, 0.252), (2.070, 0.226)]
+         (2.142, 0.252), (2.070, 0.226), (2.000, 0.262), (1.965, 0.265)]
 TIP_R = [(-2.096, 1.034), (-2.112, 1.012), (-2.124, 0.988), (-2.132, 0.962), (-2.138, 0.932), (-2.142, 0.898),
          (-2.146, 0.860), (-2.150, 0.800), (-2.196, 0.722), (-2.212, 0.600), (-2.212, 0.440), (-2.196, 0.326),
-         (-2.140, 0.278), (-2.010, 0.246)]
-P_F = [2.0, 2.0, 2.0, 2.05, 2.1, 2.15, 2.2, 2.25, 2.3, 2.3, 2.3, 2.25, 2.2, 2.1]
-P_R = [2.0, 2.0, 2.1, 2.2, 2.25, 2.3, 2.35, 2.4, 2.5, 2.6, 2.6, 2.5, 2.4, 2.2]
+         (-2.140, 0.278), (-2.010, 0.246), (-2.000, 0.295), (-1.980, 0.300)]
+P_F = [2.0, 2.0, 2.0, 2.05, 2.1, 2.15, 2.2, 2.25, 2.3, 2.3, 2.3, 2.25, 2.2, 2.1, 2.1, 2.0]
+P_R = [2.0, 2.0, 2.1, 2.2, 2.25, 2.3, 2.35, 2.4, 2.5, 2.6, 2.6, 2.5, 2.4, 2.2, 2.2, 2.0]
 
 
 def flare(x):
@@ -82,7 +91,7 @@ def flare(x):
     for xa in (1.2915, -1.2335):
         d = abs(x - xa) / 0.55
         if d < 1:
-            out = max(out, math.cos(0.5 * math.pi * d) ** 2)
+            out = max(out, (1.0 - d * d) ** 3)      # C2 bump: no curvature step (zebra kink) where it ends
     return out
 
 
@@ -159,6 +168,9 @@ def section(x):
     pts[11] = (x, y11, tab(x, H11))
     pts[12] = (x, y11 - 0.040, tab(x, H12))
     pts[13] = (x, 0.55, tab(x, H12) - 0.010)
+    hf = tab(x, HF)
+    pts[14] = (x, 0.50, hf)
+    pts[15] = (x, 0.0, hf + 0.004)
     return pts
 
 
@@ -198,6 +210,8 @@ def face_zone(xa, xb, j):
         return 1                     # windshield
     if j <= 1 and X_DECK < xm < X_ROOF_END:
         return 1                     # backlight
+    if j >= 13:
+        return 4                     # floor pan + inner sill wall
     if j in (4, 5) and X_GLASS_END < xm < X_COWL:
         if X_BR < xm < X_BF:
             return 2                 # B-pillar
@@ -221,7 +235,7 @@ def build_cage(name="sti_body_cage", levels=3):
         for j in range(NROW - 1):
             # winding: outward normal (stations go front -> rear, rows top -> bottom)
             f = bm.faces.new((V[i][j], V[i][j + 1], V[i + 1][j + 1], V[i + 1][j]))
-            zval = 0
+            zval = 4 if j >= 13 else 0
             if xs[i] is not None and xs[i + 1] is not None:
                 zval = face_zone(xs[i], xs[i + 1], j)
             f[zl] = zval
@@ -419,6 +433,9 @@ def flanges(ob, cuts):
     flange spec: dict(dir=Vector or "arch", depth=(d1, d2), out=(o1, o2), zone=int, xa=axle x)."""
     src = bmesh.new()
     src.from_mesh(ob.data)
+    szl = src.faces.layers.int.get("zone")
+    if szl is not None:      # the kept wheel-well walls: their edges with the skin still get the rolled lip
+        bmesh.ops.delete(src, geom=[f for f in src.faces if f[szl] == 5], context="FACES")
     out = bmesh.new()
     zl = out.faces.layers.int.new("zone")
     vmap = {}
@@ -467,7 +484,10 @@ def flanges(ob, cuts):
                 for dd, oo in ROLL:
                     vs.append(out.verts.new(co + d * dd - o_r * oo))
                 for dd, oo in zip(fs["depth"], fs["out"]):
-                    vs.append(out.verts.new(co + d * (dd + ROLL[-1][0]) + o * oo - o_r * ROLL[-1][1]))
+                    if fs["dir"] == "arch":    # short return that tucks behind the wheel-well wall at once
+                        vs.append(out.verts.new(co + d * (dd + ROLL[-1][0]) + o_r * (oo - ROLL[-1][1])))
+                    else:
+                        vs.append(out.verts.new(co + d * (dd + ROLL[-1][0]) + o * oo - o_r * ROLL[-1][1]))
                 vmap[key] = vs
             ring.append(vmap[key])
         ra, rb = ring
@@ -488,6 +508,14 @@ def body_skin(levels=3):
     cage = build_cage(levels=levels)
     me = evaluated_mesh(cage, "sti_body_skin")
     remove(cage)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    zl = bm.faces.layers.int.get("zone")
+    for e in bm.edges:
+        if len({f[zl] == 4 for f in e.link_faces}) > 1:
+            e.smooth = False          # the rocker / floor-pan crease: split normals (paint normal transfer)
+    bm.to_mesh(me)
+    bm.free()
     return new_object("sti_body_skin", me)
 
 
@@ -496,12 +524,12 @@ def make_cuts():
     for xa, r in ARCH_R.items():
         for sgn in (1, -1):
             cuts.append(Cut("arch", arch_bm(xa, r, sgn),
-                            dict(dir="arch", xa=xa, depth=(0.012, 0.070), out=(0.004, 0.045), zone=(0, 0))))
+                            dict(dir="arch", xa=xa, depth=(0.010, 0.018), out=(0.006, 0.012), zone=(0, 0))))
     # bugeye headlamp: a teardrop that wraps the nose corner (round lamp low-inboard, tail up the fender)
     hl = hull_of_spheres(HEADLAMP_SPHERES)
     for b in (hl, mirror_bm(hl)):
-        cuts.append(Cut("headlamp", b, dict(dir=(-0.75, -0.65, 0.0), depth=(0.006, 0.045), out=(0, 0), zone=(2, 2)),
-                        swap=True))
+        cuts.append(Cut("headlamp", b, dict(dir=(-0.75, -0.65, 0.0), depth=(0.006, 0.045), out=(0, 0), zone=(6, 6)),
+                        swap=True))      # zone 6: chrome housing walls
     tl = hull_of_spheres(TAILLAMP_SPHERES)
     for b in (tl, mirror_bm(tl)):
         cuts.append(Cut("taillamp", b, dict(dir=(0.8, -0.6, 0.0), depth=(0.006, 0.035), out=(0, 0), zone=(2, 2)),
@@ -549,7 +577,9 @@ def cut_body(skin, grooves=(), recesses=()):
         remove(tmp)
         remove(cutter)
     bms = [c.bm for c in cuts] + list(grooves) + list(recesses)
-    zones = [99] * len(cuts) + [2] * len(grooves) + [3] * len(recesses)
+    # the arch cutter walls stay (zone 5): the cylinder inside the closed shell + its inner end cap = a wheel
+    # well that meets the floor pan exactly; every other cutter wall is dropped (zone 99) and gets a flange
+    zones = [5 if c.name == "arch" else 99 for c in cuts] + [2] * len(grooves) + [3] * len(recesses)
     cutter = cutter_object("cutters", bms, zones)
     boolean(skin, cutter)
     remove(cutter)
@@ -631,7 +661,8 @@ RUBBER = [(-0.0128, -0.0105), (-0.0122, -0.0045), (-0.0112, 0.0026), (-0.008, 0.
 
 
 def split_skin(skin, src_bvh):
-    """-> dict: 'paint' (bmesh, skin faces zone 0), 'glass' (inset zone 1), 'black' (zone 2 + rubber)."""
+    """-> dict: 'paint' (bmesh, skin faces zone 0), 'glass' (inset zone 1), 'black' (zone 2 + rubber),
+    'floor' (floor pan zone 4 + wheel-well walls zone 5)."""
     bm = bmesh.new()
     bm.from_mesh(skin.data)
     bm.normal_update()
@@ -672,7 +703,7 @@ def split_skin(skin, src_bvh):
         frit.from_mesh(me)
         bpy.data.meshes.remove(me)
         rib.free()
-    for name, zvs in (("paint", (0, 3)), ("glass", (1,)), ("black", (2,))):
+    for name, zvs in (("paint", (0, 3)), ("glass", (1,)), ("black", (2,)), ("floor", (4, 5))):
         b = bm.copy()
         zl2 = b.faces.layers.int.get("zone")
         bmesh.ops.delete(b, geom=[f for f in b.faces if f[zl2] not in zvs], context="FACES")

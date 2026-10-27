@@ -33,6 +33,7 @@ ISLANDS = {   # name: ((axis, sign) for u, (axis, sign) for v)
     "top": ((0, -1), (1, 1)),
     "front": ((1, 1), (2, 1)),
     "rear": ((1, -1), (2, 1)),
+    "scoop": ((0, -1), (1, 1)),     # hood-scoop shell (faces with proj == 2), top projection, own island
 }
 # faces whose centroid falls in a box are forced to an island (so a decal stays on one projection)
 FORCE = [
@@ -64,7 +65,7 @@ def layout(ext):
     """ext: island -> (umin, umax, vmin, vmax) in metres. Returns island -> dict(x0, y0, s, umin, vmax)."""
     w = {k: e[1] - e[0] for k, e in ext.items()}
     h = {k: e[3] - e[2] for k, e in ext.items()}
-    rows = [["left"], ["right"], ["top"], ["front", "rear"]]
+    rows = [["left"], ["right"], ["top"], ["front", "rear", "scoop"]]
     width = max(sum(w[k] for k in r) for r in rows)
     height = sum(max(h[k] for k in r) for r in rows)
     s = min((TEX - 3 * MARGIN) / width, (TEX - (len(rows) + 1) * MARGIN - 40) / height)
@@ -157,14 +158,18 @@ def panel_lines(bvh):
         add([(1.905, 0.700), (1.835, 0.600), (1.760, 0.520), (1.700, 0.470)], "side", side)
         add([(-1.965, 0.740), (-1.880, 0.670), (-1.790, 0.600), (-1.690, 0.520), (-1.640, 0.490)], "side", side)
         add([(-1.965, 0.740), (-2.060, 0.725), (-2.130, 0.712)], "side", side)
-        add([(0.82, 0.712), (0.55, 0.712), (0.25, 0.712)], "rear", side)
+        # rear bumper top: one continuous shut line under the lamps and the boot lid (rear view: y, h)
+        add([(0.82, 0.712), (0.55, 0.713), (0.30, 0.716), (0.0, 0.717)], "rear", side)
         # hood edges (top view: x, y) and the hood nose
         add([(2.040, 0.430), (1.975, 0.515), (1.80, 0.552), (1.50, 0.572), (1.20, 0.588), (0.99, 0.600)], "top", side)
         add([(2.064, 0.0), (2.060, 0.18), (2.052, 0.31), (2.040, 0.430)], "top", side)
         # trunk lid (top view) and its rear edge (rear view)
         add([(-1.640, 0.0), (-1.640, 0.45), (-1.648, 0.565), (-1.700, 0.598), (-2.000, 0.600), (-2.075, 0.585)],
             "top", side)
-        add([(0.0, 0.955), (0.30, 0.955), (0.46, 0.950)], "rear", side, curve=False)
+        # boot lid side edges on the rear face: down from the deck corner, around the lamp's inboard end,
+        # to the bumper top (the lid is the panel between the tail lamps, as on the GD sedan)
+        add([(0.585, 1.020), (0.540, 0.985), (0.470, 0.962), (0.448, 0.930), (0.446, 0.860), (0.446, 0.770),
+             (0.440, 0.730), (0.420, 0.718)], "rear", side)
     # fuel filler door, right rear quarter
     add(rounded_box_2d(-1.56, 0.875, 0.175, 0.115, 0.025), "side", -1, curve=False)
     return L
@@ -202,6 +207,14 @@ def finish_paint(me, src_me, OUT, ARGS):
         if pl is None or not f[pl]:
             isl[f.index] = "hidden"
             continue
+        if f[pl] == 2:
+            name = "scoop"
+            isl[f.index] = name
+            e = ext[name]
+            for v in f.verts:
+                u, w = project(name, v.co)
+                e[0], e[1], e[2], e[3] = min(e[0], u), max(e[1], u), min(e[2], w), max(e[3], w)
+            continue
         c = f.calc_center_median()
         loc, n, i, d = bvh.find_nearest(c)
         name = island_of(c, n if (n is not None and not recess) else f.normal)
@@ -233,8 +246,14 @@ def finish_paint(me, src_me, OUT, ARGS):
                         str(Path(__file__).resolve().parent / "sti_livery.py"), str(OUT), str(LAYOUT)], check=True)
 
     # smooth normals of the uncut surface on every skin vertex (booleans leave slivers along the cuts)
-    ob = new_object("paint_tmp", me)
-    src = new_object("paint_src", src_me)
+    return transfer_skin_normals(me, src_me, "sti_paint")
+
+
+def transfer_skin_normals(me, src_me, name):
+    """Custom normals from the faired uncut skin (src_me) onto every vertex flagged by the int vertex attribute
+    'skin' (body paint skin, body glass); other vertices keep their own normals. Returns a new mesh."""
+    ob = new_object(name + "_tmp", me)
+    src = new_object(name + "_src", src_me)
     vg = ob.vertex_groups.new(name="skin")
     attr = me.attributes["skin"].data
     vg.add([i for i in range(len(me.vertices)) if attr[i].value], 1.0, "REPLACE")
@@ -244,13 +263,48 @@ def finish_paint(me, src_me, OUT, ARGS):
     m.data_types_loops = {"CUSTOM_NORMAL"}
     m.loop_mapping = "POLYINTERP_NEAREST"
     m.vertex_group = "skin"
-    out = evaluated_mesh(ob, "sti_paint")
+    out = evaluated_mesh(ob, name)
     for a in ("skin",):
         if a in out.attributes:
             out.attributes.remove(out.attributes[a])
     remove(ob)
     bpy.data.objects.remove(src)
     return out
+
+
+def faired_normals(me, iterations=90, angle_deg=10.0):
+    """Low-pass the vertex-normal field of the (uncut) body skin so the clear coat reflects like a faired panel:
+    the subdivided loft carries small ripples (uneven station spacing, table knots) that read as wavy
+    reflections. Normals are averaged with their neighbours over edges that are smooth (dihedral below
+    angle_deg, same zone, not marked sharp); vertices on a crease / zone boundary keep their own normal, so
+    character lines and glass edges stay crisp. Writes custom split normals on me (the normal-transfer source)."""
+    import numpy as np
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.normal_update()
+    zl = bm.faces.layers.int.get("zone")
+    a = math.radians(angle_deg)
+    nv = len(bm.verts)
+    vn = np.array([v.normal[:] for v in bm.verts], np.float64)
+    edges, frozen = [], np.zeros(nv, bool)
+    for e in bm.edges:
+        lf = e.link_faces
+        if (len(lf) != 2 or not e.smooth or e.calc_face_angle(0.0) > a
+                or (zl is not None and lf[0][zl] != lf[1][zl])):
+            frozen[e.verts[0].index] = frozen[e.verts[1].index] = True
+        else:
+            edges.append((e.verts[0].index, e.verts[1].index))
+    bm.free()
+    e = np.array(edges, np.int64)
+    n = vn.copy()
+    for _ in range(iterations):
+        acc = n.copy()
+        np.add.at(acc, e[:, 0], n[e[:, 1]])
+        np.add.at(acc, e[:, 1], n[e[:, 0]])
+        acc /= np.maximum(np.linalg.norm(acc, axis=1, keepdims=True), 1e-12)
+        n = np.where(frozen[:, None], vn, acc)
+    me.normals_split_custom_set_from_vertices([tuple(v) for v in n])
+    return me
 
 
 def box_uv(me):

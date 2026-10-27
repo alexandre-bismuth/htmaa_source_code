@@ -2,8 +2,12 @@
 materials from sti_parts.json, places the wheels (right side mirrored), renders with EEVEE.
 
     /Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P tools/blender/render_sti.py [-- names]
-names: comma list of shots (default all): f34, r34, side, front, rear, wheel, nose, tail, top, low, studio
-Writes data/processed/common/car/renders/<shot>.png (1600x900).
+names: comma list of shots (default all): f34, r34, side, front, rear, wheel, nose, tail, top, low, studio, ...
+        "under" = the underside / hollow-shell check set (bot, low_side, low_f34, low_r34, arch_in, grille_in,
+        low_front, low_rear, sill_low): shots named bot* hide the ground and look up from below.
+Options: --clay  --sky  --zebra (mirror paint in a striped sky: surface fairness)  cyc  noglass  nowheels  --car=<parts dir>  --out=<dir> (default data/processed/common/car/renders)  --prefix=<p>
+Materials are back-face culled like the game's one-sided Unreal materials (a hollow shell shows as see-through).
+Writes <out>/<prefix><shot>.png (1600x900).
 """
 import json
 import math
@@ -15,10 +19,21 @@ from mathutils import Matrix, Vector
 
 ROOT = Path(__file__).resolve().parents[2]
 CAR = ROOT / "data/processed/common/car"
+for _a in sys.argv:
+    if _a.startswith("--car="):       # render another build's parts (e.g. a saved baseline for before/after)
+        CAR = Path(_a[6:])
 OUTD = CAR / "renders"
+for _a in sys.argv:
+    if _a.startswith("--out="):
+        OUTD = Path(_a[6:])
+PREFIX = next((a[9:] for a in sys.argv if a.startswith("--prefix=")), "")
 HDRI = ROOT / "data/raw/hdri"
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-WANT = set(ARGS[0].split(",")) if ARGS and not ARGS[0].startswith("-") else None
+WANT = set(ARGS[0].split(",")) if ARGS and not ARGS[0].startswith("-") and ARGS[0] not in ("cyc", "noglass", "nowheels") else None
+UNDER = ["bot", "bot_f", "bot_r", "low_side", "low_f34", "low_r34", "arch_in", "well_up", "rwell_up", "grille_in",
+         "low_front", "low_rear", "sill_low"]
+if WANT and "under" in WANT:
+    WANT = (WANT - {"under"}) | set(UNDER)
 G = -0.086
 WHEELS = [(1.2915, 0.7425), (-1.2335, 0.745)]
 WHEEL_Z = 0.231
@@ -62,10 +77,41 @@ def principled(name, spec):
     if "emissive" in spec:
         p.inputs["Emission Color"].default_value = (*spec["emissive"], 1)
         p.inputs["Emission Strength"].default_value = 1.0
-    if "opacity" in spec:
+    if spec.get("part") == "red":
+        # red-tinted translucent lens: (tinted see-through + gloss) mixed with a red film by the opacity
+        tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+        tr.inputs["Color"].default_value = (*spec.get("transmittance", (0.8, 0.04, 0.04)), 1)
+        gl = nt.nodes.new("ShaderNodeBsdfPrincipled")
+        gl.inputs["Base Color"].default_value = (0, 0, 0, 1)
+        gl.inputs["Roughness"].default_value = 0.02
+        add = nt.nodes.new("ShaderNodeAddShader")
+        nt.links.new(tr.outputs[0], add.inputs[0])
+        nt.links.new(gl.outputs[0], add.inputs[1])
+        mix = nt.nodes.new("ShaderNodeMixShader")
+        mix.inputs["Fac"].default_value = spec.get("opacity", 0.4)
+        nt.links.new(add.outputs[0], mix.inputs[1])
+        nt.links.new(p.outputs[0], mix.inputs[2])
+        nt.links.new(mix.outputs[0], nt.nodes["Material Output"].inputs["Surface"])
+        m.surface_render_method = "BLENDED"
+    elif spec.get("part") in ("lens", "glass"):
+        # the game's Thin Translucent: tinted see-through plus full-strength reflections (no alpha fade):
+        # Transparent BSDF (tint) + a black glossy Principled
+        tint = {"lens": (0.92, 0.92, 0.93), "glass": (0.36, 0.40, 0.39)}[spec["part"]]
+        p.inputs["Base Color"].default_value = (0, 0, 0, 1)
+        p.inputs["Roughness"].default_value = 0.02
+        tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+        tr.inputs["Color"].default_value = (*tint, 1)
+        add = nt.nodes.new("ShaderNodeAddShader")
+        out = nt.nodes["Material Output"]
+        nt.links.new(tr.outputs[0], add.inputs[0])
+        nt.links.new(p.outputs[0], add.inputs[1])
+        nt.links.new(add.outputs[0], out.inputs["Surface"])
+        m.surface_render_method = "BLENDED"
+    elif "opacity" in spec:
         p.inputs["Alpha"].default_value = spec["opacity"]
         m.surface_render_method = "BLENDED"
-        m.use_backface_culling = False
+    # Unreal materials here are one-sided: cull back faces so the renders show what the game shows
+    m.use_backface_culling = True
     return m
 
 
@@ -90,6 +136,10 @@ def main():
     for s in spec["parts"]:
         if "noglass" in ARGS and s["part"] == "glass":
             continue
+        if "nowheels" in ARGS and s.get("wheel"):
+            continue
+        if "--zebra" in ARGS and s["part"] == "paint":     # surface-fairness check: mirror paint, striped sky
+            s = dict(base_color=[0.9, 0.9, 0.9], metallic=1.0, roughness=0.0, part="paint")
         if clay and s["part"] == "paint":
             s = dict(base_color=[0.5, 0.5, 0.52], metallic=0.0, roughness=0.25, clearcoat=1.0, part="paint")
         mat = principled("M_" + s["part"], s)
@@ -114,11 +164,27 @@ def main():
     gp.inputs["Base Color"].default_value = (0.20, 0.20, 0.205, 1)
     gp.inputs["Roughness"].default_value = 0.7
     bpy.context.object.data.materials.append(gm)
+    ground = bpy.context.object
     w = bpy.data.worlds.new("w")
     sc.world = w
     w.use_nodes = True
     nt = w.node_tree
-    if "--sky" in ARGS:
+    if "--zebra" in ARGS:
+        # horizontal light/dark bands by view elevation: kinks and ripples in the paint show as wobbly stripes
+        coord = nt.nodes.new("ShaderNodeTexCoord")
+        sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+        mul = nt.nodes.new("ShaderNodeMath")
+        mul.operation, mul.inputs[1].default_value = "MULTIPLY", 40.0
+        sn = nt.nodes.new("ShaderNodeMath")
+        sn.operation = "SINE"
+        gt = nt.nodes.new("ShaderNodeMath")
+        gt.operation, gt.inputs[1].default_value = "GREATER_THAN", 0.0
+        nt.links.new(coord.outputs["Generated"], sep.inputs["Vector"])
+        nt.links.new(sep.outputs["Z"], mul.inputs[0])
+        nt.links.new(mul.outputs[0], sn.inputs[0])
+        nt.links.new(sn.outputs[0], gt.inputs[0])
+        nt.links.new(gt.outputs[0], nt.nodes["Background"].inputs["Color"])
+    elif "--sky" in ARGS:
         env = nt.nodes.new("ShaderNodeTexEnvironment")
         env.image = bpy.data.images.load(str(HDRI / "kloofendal_48d_partly_cloudy_puresky_2k.hdr"))
         mapping = nt.nodes.new("ShaderNodeMapping")
@@ -150,6 +216,13 @@ def main():
             lo.location = loc
             lo.rotation_euler = (Vector((0, 0, 0.5)) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
     nt.nodes["Background"].inputs["Strength"].default_value = 1.0
+    # light from below for the bot* shots only (the studio lights are all above the car)
+    bl = bpy.data.lights.new("below", "AREA")
+    bl.shape, bl.size, bl.size_y, bl.energy = "RECTANGLE", 6.0, 3.0, 500
+    below = bpy.data.objects.new("below", bl)
+    sc.collection.objects.link(below)
+    below.location = (0.8, 1.5, -3.5)
+    below.rotation_euler = (Vector((0, 0, 0.2)) - below.location).to_track_quat("-Z", "Y").to_euler()
 
     sc.render.engine = "BLENDER_EEVEE"
     if "cyc" in ARGS:
@@ -207,13 +280,35 @@ def main():
         "farch": ((2.3, 2.4, 0.5), (1.3, 0.8, 0.3), 45),
         "cpillar": ((-2.6, 2.6, 1.9), (-1.1, 0.6, 1.1), 40),
         "apillar": ((1.5, 1.6, 1.6), (0.6, 0.65, 1.05), 40),
+        # underside / hollow-shell checks (bot* hide the ground)
+        "bot": ((0.0, 0.0, -5.5), (0.0, 0.0001, 0.3), 30),
+        "bot_f": ((3.6, 1.2, -2.2), (0.6, 0.0, 0.25), 32),
+        "bot_r": ((-3.6, -1.2, -2.2), (-0.6, 0.0, 0.25), 32),
+        "low_side": ((0.0, 5.2, -0.02), (0.0, 0.0, 0.16), 32),
+        "low_f34": ((3.8, 3.2, -0.03), (0.4, 0.0, 0.18), 30),
+        "low_r34": ((-3.8, 3.2, -0.03), (-0.4, 0.0, 0.18), 30),
+        "arch_in": ((2.5, 1.55, -0.03), (1.29, 0.55, 0.36), 34),
+        "well_up": ((1.25, 1.75, -0.05), (1.29, 0.45, 0.42), 40),
+        "rwell_up": ((-1.20, 1.75, -0.05), (-1.23, 0.45, 0.42), 40),
+        "grille_in": ((3.4, 0.9, 0.42), (2.0, 0.0, 0.42), 32),
+        "low_front": ((5.5, 0.0, -0.02), (0.0, 0.0, 0.14), 28),
+        "low_rear": ((-5.5, 0.0, -0.02), (0.0, 0.0, 0.14), 28),
+        "sill_low": ((0.3, 2.4, -0.04), (-0.3, 0.5, 0.12), 30),
     }
+    for _a in ARGS:      # ad-hoc camera: --cam=name:x,y,z,tx,ty,tz,lens (a name starting with bot hides the ground)
+        if _a.startswith("--cam="):
+            nm, vals = _a[6:].split(":")
+            v = [float(t) for t in vals.split(",")]
+            shots[nm] = (tuple(v[0:3]), tuple(v[3:6]), v[6])
+            WANT.add(nm) if WANT is not None else None
     OUTD.mkdir(parents=True, exist_ok=True)
     for name, (loc, tgt, lens) in shots.items():
         if WANT and name not in WANT:
             continue
         look(cam, loc, tgt, lens)
-        sc.render.filepath = str(OUTD / (f"clay_{name}.png" if clay else f"{name}.png"))
+        ground.hide_render = name.startswith("bot")
+        below.hide_render = not name.startswith("bot")
+        sc.render.filepath = str(OUTD / (PREFIX + (f"clay_{name}.png" if clay else f"{name}.png")))
         bpy.ops.render.render(write_still=True)
 
 

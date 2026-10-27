@@ -451,8 +451,10 @@ def main(region):
     # (inside a lane: 1.8 m from the kerbs, as the car's centre is when it drives along one)
     # props (props.py, run before this) the car must clear: its half width plus a trunk / pole and a margin
     props_file = rdir / "props/props.json"
+    # (not the parked cars: props.py keeps them clear of the lines it reads from here)
     post_geom = unary_union([Point(p["x"] / 100.0, -p["y"] / 100.0).buffer(POST_CLEAR_M, 8)
-                             for p in (json.loads(props_file.read_text()) if props_file.exists() else [])])
+                             for p in (json.loads(props_file.read_text()) if props_file.exists() else [])
+                             if not p["type"].startswith("parked_")])
     posts = prep(post_geom)
     lanes = prep(unary_union([g.buffer(0) for g, p in road_l if p.get("TYPE") != "RD-TRAF-ISLAND"])
                  .difference(island_geom).buffer(-1.8).difference(post_geom))

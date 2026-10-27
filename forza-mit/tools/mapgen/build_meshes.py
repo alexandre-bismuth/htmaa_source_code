@@ -33,6 +33,8 @@ from shapely.ops import linemerge, transform, unary_union
 from shapely.prepared import prep
 
 import buildings3d
+import landmarks_geometry as LG
+import landmarks_table as LM
 from geo import CONFIG, Frame, boston_tiles, camb3d_tiles, city_polygon, lonlat_box_en, region_polygon
 from gltf import write_glb
 
@@ -120,7 +122,7 @@ class MeshBuilder:
 
 
 # ---------------------------------------------------------------- facade styles
-STYLES = ["brick_red", "brick_buff", "limestone", "concrete", "glass", "metal", "siding", "wall", "brick_georgian"]
+STYLES = ["brick_red", "brick_buff", "limestone", "concrete", "glass", "metal", "siding", "wall", "brick_georgian"] + LM.LANDMARK_CLASSES
 MIT_STYLE = {
     # MIT building number -> facade style (from MIT campus architecture)
     **{n: "limestone" for n in ["1", "2", "3", "4", "5", "6", "7", "8", "10", "11", "14", "50"]},
@@ -163,7 +165,7 @@ HARVARD_POI = "harvard university"
 HARVARD_DEFAULT = "brick_georgian"
 HARVARD_STYLE = {
     # granite / limestone: University Hall, Boylston Hall, Langdell, Adolphus Busch, Swartz (Andover), Littauer
-    **{b: "limestone" for b in ["318-16", "318-29", "266-6", "241-54", "241-2", "241-5", "266-17"]},
+    **{b: "granite" for b in ["318-16", "318-29", "266-6", "241-54", "241-2", "241-5", "266-17"]},
     # concrete: Science Center, William James, Carpenter Center, Gund, Mather, Peabody Terrace,
     # Smith Campus Center, Hilles, Pound, Leverett Towers
     **{b: "concrete" for b in ["266-18", "241-53", "333-2", "299-6", "513-3", "513-4",
@@ -320,6 +322,40 @@ def reseat_walls(models, tiles=TILES_3D):
     return len(walls)
 
 
+def dedupe_models(models):
+    """The catalog has ~36 buildings twice under two Model_IDs with identical geometry (Dunster House, Peabody
+    Terrace...). Both copies were drawn with different seeds: z-fighting walls whose window grids flicker
+    against each other. Keep the first of each identical pair."""
+    seen, out = set(), []
+    for b in models:
+        c = b.vertices.mean(0)
+        k = (len(b.vertices), len(b.faces), round(float(c[0]), 1), round(float(c[1]), 1), round(float(c[2]), 1))
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(b)
+    # superseded versions: the same BldgID modelled in 2010 and again in 2018 / 2021, both kept by the catalog,
+    # overlapping almost entirely: keep the newest
+    from shapely.geometry import MultiPoint
+    by_id = defaultdict(list)
+    for i, b in enumerate(out):
+        if b.building_id.strip() and b.poi_type.lower() != "wall":
+            by_id[b.building_id.strip()].append(i)
+    drop = set()
+    for idx in by_id.values():
+        if len(idx) < 2:
+            continue
+        hulls = {i: MultiPoint(out[i].vertices[:, :2]).convex_hull for i in idx}
+        for i in idx:
+            for j in idx:
+                if i < j and out[i].model_date != out[j].model_date and i not in drop and j not in drop:
+                    small = min(hulls[i].area, hulls[j].area)
+                    if small > 20.0 and hulls[i].intersection(hulls[j]).area > 0.8 * small:
+                        drop.add(i if out[i].model_date < out[j].model_date else j)
+    out = [b for i, b in enumerate(out) if i not in drop]
+    return out, len(models) - len(out)
+
+
 WALL_MAX_OVERLAP = 0.5   # a garden wall mostly inside a building footprint is a modelling duplicate
 
 
@@ -399,50 +435,227 @@ def boston_style(name, height_m, east, seed):
     return "limestone" if seed < 0.4 else ("concrete" if seed < 0.7 else ("brick_buff" if seed < 0.85 else "glass"))
 
 
-def add_building_faces(walls_by_style, roofs, verts, faces, style, seed, shop_fn=None):
+WALL_NZ = 0.12       # |n.z| below this is a wall plane (procedural windows); steeper faces up to 0.35 (mansards,
+                     # spires, steep gables) were walls until round v2 and got windows: now roofs (shingle shader)
+STEP_M = 0.6         # a jump of the top / bottom edge this big splits a wall plane (stepped parapets, wings)
+PROBE_M = 0.3        # inside / outside probe distance for the wall orientation test
+PROBE_FAR_M = 1.0    # second probe for faces the first one can't decide
+
+
+def _inside_parity(pts, roof_tri):
+    """Upward-ray parity of points (P,3) against the non-vertical triangles (R,3,3) of the same model:
+    an odd number of faces above a point means it is inside the (2.5D, bottomless) building solid."""
+    out = np.zeros(len(pts), bool)
+    if not len(roof_tri):
+        return out
+    a = roof_tri[:, 0]
+    v0 = roof_tri[:, 2, :2] - a[:, :2]
+    v1 = roof_tri[:, 1, :2] - a[:, :2]
+    d00 = (v0 * v0).sum(1); d01 = (v0 * v1).sum(1); d11 = (v1 * v1).sum(1)
+    den = d00 * d11 - d01 * d01
+    ok = np.abs(den) > 1e-9
+    den = np.where(ok, den, 1.0)
+    for s in range(0, len(pts), 128):
+        p = pts[s:s + 128]
+        v2 = p[:, None, :2] - a[None, :, :2]
+        d20 = (v2 * v0[None]).sum(2); d21 = (v2 * v1[None]).sum(2)
+        uu = (d11 * d20 - d01 * d21) / den; vv = (d00 * d21 - d01 * d20) / den
+        hit = ok & (uu >= 0) & (vv >= 0) & (uu + vv <= 1)
+        z = a[None, :, 2] + uu * (roof_tri[None, :, 2, 2] - a[None, :, 2]) + vv * (roof_tri[None, :, 1, 2] - a[None, :, 2])
+        out[s:s + 128] = (hit & (z > p[:, None, 2])).sum(1) % 2 == 1
+    return out
+
+
+def wall_flip(tri, nrm, wall):
+    """Wall triangles whose normal points into the building. The CyberCity3D OBJ winding is outward on ~99 % of the
+    wall faces; the old rule (normal away from the vertex mean) turned ~25 % of them inward on L-shaped and
+    courtyard buildings (mirrored shop lettering, upside-down sill / cornice shading). Flip only where the
+    parity test is unambiguous: the probe in front of the face is inside the solid and the one behind is not."""
+    flip = np.zeros(len(tri), bool)
+    w = np.where(wall)[0]
+    if not len(w):
+        return flip
+    roof_tri = tri[np.abs(nrm[:, 2]) > 0.05]
+    c = tri[w].mean(1)
+    n2 = nrm[w, :2] / np.maximum(np.linalg.norm(nrm[w, :2], axis=1, keepdims=True), 1e-9)
+    off = np.column_stack([n2 * PROBE_M, np.zeros(len(w))])
+    front_in = _inside_parity(c + off, roof_tri)
+    back_in = _inside_parity(c - off, roof_tri)
+    flip[w] = front_in & ~back_in
+    # ambiguous at 0.3 m (both probes inside: under an overhang / in a slot; both outside: a thin fin or parapet):
+    # decide with probes 1 m out (resolves ~10 % of them; the rest keep the OBJ winding)
+    amb = np.where(front_in == back_in)[0]
+    if len(amb):
+        off2 = np.column_stack([n2[amb] * PROBE_FAR_M, np.zeros(len(amb))])
+        f2 = _inside_parity(c[amb] + off2, roof_tri)
+        b2 = _inside_parity(c[amb] - off2, roof_tri)
+        flip[w[amb]] = f2 & ~b2
+    return flip
+
+
+def _profile(us, zs, samples):
+    """Top and bottom edge of a wall plane (triangles as (T,3) u and z) at each sample u."""
+    top = np.full(len(samples), -np.inf)
+    bot = np.full(len(samples), np.inf)
+    for k in range(3):
+        ua, ub = us[:, k], us[:, (k + 1) % 3]
+        za, zb = zs[:, k], zs[:, (k + 1) % 3]
+        lo, hi = np.minimum(ua, ub), np.maximum(ua, ub)
+        inside = (samples[:, None] >= lo[None] - 1e-6) & (samples[:, None] <= hi[None] + 1e-6)
+        du = np.where(np.abs(ub - ua) < 1e-6, 1.0, ub - ua)
+        t = np.clip((samples[:, None] - ua[None]) / du[None], 0.0, 1.0)
+        z = np.where(np.abs(ub - ua)[None] < 1e-6, np.maximum(za, zb)[None], za[None] + t * (zb - za)[None])
+        zl = np.where(np.abs(ub - ua)[None] < 1e-6, np.minimum(za, zb)[None], z)
+        top = np.maximum(top, np.where(inside, z, -np.inf).max(1))
+        bot = np.minimum(bot, np.where(inside, zl, np.inf).min(1))
+    return top, bot
+
+
+def wall_planes(n, c, a, tol_deg=3.0, tol_m=0.2):
+    """Cluster wall triangles into planes: normal within tol_deg and centroid within tol_m of the plane of the
+    cluster's largest triangle. (Rounding normals / offsets into bins, as before round v2, split coplanar quads
+    whose two triangles fell either side of a bin edge: misaligned windows across the diagonal, or a lone
+    triangle whose sloped edge became the plane's top.) Returns (label per triangle, unit xy normal per plane)."""
+    n2 = n[:, :2] / np.maximum(np.linalg.norm(n[:, :2], axis=1, keepdims=True), 1e-9)
+    label = np.full(len(n), -1)
+    refs, offs = [], []
+    ct = np.cos(np.radians(tol_deg))
+    for i in np.argsort(-a):
+        if refs:
+            R = np.asarray(refs)
+            ok = np.where((R @ n2[i] > ct) & (np.abs(R @ c[i, :2] - np.asarray(offs)) < tol_m))[0]
+            if len(ok):
+                label[i] = ok[0]
+                continue
+        label[i] = len(refs)
+        refs.append(n2[i])
+        offs.append(float(n2[i] @ c[i, :2]))
+    return label, np.asarray(refs)
+
+
+def plane_breaks(us, zs):
+    """u positions where the plane's top or bottom edge jumps by more than STEP_M (stepped parapets, a lower wing
+    sharing the plane, an arcade): the plane is split there so each part fits its own floors."""
+    cand = np.unique(np.round(us.ravel(), 2))
+    lo, hi = cand[0], cand[-1]
+    inner = cand[(cand > lo + 0.4) & (cand < hi - 0.4)]
+    if not len(inner):
+        return []
+    tm, bm = _profile(us, zs, inner - 0.03)
+    tp, bp = _profile(us, zs, inner + 0.03)
+    jump = (np.abs(tm - tp) > STEP_M) | (np.abs(bm - bp) > STEP_M)
+    out = []
+    for x in inner[jump]:
+        if not out or x - out[-1] > 0.4:
+            out.append(float(x))
+    return out
+
+
+def clip_tri_u(p3, uu, a, b):
+    """Clip one triangle (3D points p3, plane coordinate uu) to a <= u <= b; returns a list of (3,3) triangles."""
+    poly = list(zip(p3, uu))
+    for bound, keep_ge in ((a, True), (b, False)):
+        res = []
+        for i in range(len(poly)):
+            (P, u), (Q, w) = poly[i], poly[(i + 1) % len(poly)]
+            pin = u >= bound if keep_ge else u <= bound
+            qin = w >= bound if keep_ge else w <= bound
+            if pin:
+                res.append((P, u))
+            if pin != qin and abs(w - u) > 1e-9:
+                t = (bound - u) / (w - u)
+                res.append((P + t * (Q - P), bound))
+        poly = res
+        if len(poly) < 3:
+            return []
+    pts = [p for p, _ in poly]
+    return [np.array([pts[0], pts[i], pts[i + 1]]) for i in range(1, len(pts) - 1)]
+
+
+def add_building_faces(walls_by_style, roofs, verts, faces, style, seed, shop_fn=None, face_style=None, stats=None,
+                       split=True, wall_nz=WALL_NZ):
     """Split a building mesh into wall faces (procedural-window UVs) and roof faces.
-    shop_fn(centre_xy, normal_xy) marks street-facing shopfront planes (UV1.y = seed + 2)."""
+    shop_fn(centre_xy, normal_xy) marks street-facing shopfront planes (UV1.y = seed + 2).
+    face_style(centroid (F,3), normal (F,3)) -> per-face style override array or None (landmarks.py rules).
+    Walls keep the model's outward winding (wall_flip); each wall plane is split where its top or bottom edge steps
+    (plane_breaks), and its UV2.y is the plane part's eave (the lowest point of its top edge), so floors are fitted
+    below gables instead of running windows into the gable triangle. split=False (the far backdrop ring) keeps whole
+    planes: splitting clips triangles (+50 % facade triangles) for detail nobody sees from 1 km.
+    wall_nz: |n.z| below this is a wall (landmarks_table "wall_nz": Stata's leaning walls stay walls)."""
     tri = verts[faces].copy()
     nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     area = np.linalg.norm(nrm, axis=1)
     keep = area > 1e-6
     tri, nrm, area = tri[keep], nrm[keep], area[keep]
     nrm = nrm / area[:, None]
-    is_wall = np.abs(nrm[:, 2]) < 0.35
-    # make walls face outward relative to the building centre (two-sided materials cover the
-    # remaining cases on concave buildings); roofs face up
-    centre = verts.mean(0)
-    flip = np.where(is_wall, np.einsum("ij,ij->i", nrm[:, :2], tri.mean(1)[:, :2] - centre[:2]) < 0, nrm[:, 2] < 0)
+    is_wall = np.abs(nrm[:, 2]) < wall_nz
+    flip = np.where(is_wall, wall_flip(tri, nrm, is_wall), nrm[:, 2] < 0)
     tri[flip] = tri[flip][:, ::-1]
     nrm[flip] = -nrm[flip]
+    if stats is not None:
+        stats["wall_faces"] += int(is_wall.sum())
+        stats["wall_faces_flipped"] += int((flip & is_wall).sum())
+    styles = np.full(len(tri), style, dtype=object)
+    if face_style is not None:
+        fs = face_style(tri.mean(1), nrm)
+        if fs is not None:
+            styles = fs
 
-    # walls: group faces by plane so windows can be centred on each wall plane
+    # walls: group faces by plane (and style) so windows can be centred on each wall plane
     w = np.where(is_wall)[0]
     if len(w):
-        t = np.column_stack([-nrm[w, 1], nrm[w, 0]])
-        t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-9)
-        ang = np.round(np.degrees(np.arctan2(nrm[w, 1], nrm[w, 0])) / 2.0).astype(int)
-        off = np.round(np.einsum("ij,ij->i", nrm[w, :2], tri[w, 0, :2]) / 0.3).astype(int)
+        label, ref = wall_planes(nrm[w], tri[w].mean(1), area[w])
+        t = np.column_stack([-ref[label, 1], ref[label, 0]])     # one tangent per plane: consistent u
         u = np.einsum("ijk,ik->ij", tri[w][:, :, :2], t)          # (faces, 3) metres along plane
         planes = defaultdict(list)
-        for i, key in enumerate(zip(ang, off)):
+        for i, key in enumerate(zip(label, styles[w])):
             planes[key].append(i)
-        mb = walls_by_style[style]
-        for idxs in planes.values():
+        for (_, pstyle), idxs in planes.items():
             idxs = np.array(idxs)
-            u0 = u[idxs].min()
-            width = u[idxs].max() - u0
-            zb = tri[w[idxs]][:, :, 2].min()
-            zt = tri[w[idxs]][:, :, 2].max()
-            pseed = seed
-            if shop_fn is not None and width >= 4.0 and zb < 1.0 and zt > 5.5:
-                if shop_fn(tri[w[idxs]][:, :, :2].reshape(-1, 2).mean(0), nrm[w[idxs[0]], :2]):
-                    pseed = seed + 2.0
-            for i in idxs:
-                fi = w[i]
-                p3 = tri[fi]
-                mb.add(p3, [nrm[fi]] * 3, np.column_stack([u[i] - u0, p3[:, 2]]), [[width, pseed]] * 3, [[0, 1, 2]],
-                       [[zb, zt]] * 3)
+            us, zs = u[idxs], tri[w[idxs]][:, :, 2]
+            breaks = plane_breaks(us, zs) if split and len(idxs) > 1 else []
+            if stats is not None and breaks:
+                stats["planes_split"] += 1
+            edges = [us.min()] + breaks + [us.max()]
+            # triangles of each part (clipped where a triangle straddles a break)
+            parts = [[] for _ in range(len(edges) - 1)]
+            for j, i in enumerate(idxs):
+                lo, hi = us[j].min(), us[j].max()
+                for k in range(len(parts)):
+                    a, b = edges[k], edges[k + 1]
+                    if hi <= a + 1e-6 or lo >= b - 1e-6:
+                        continue
+                    if lo >= a - 1e-6 and hi <= b + 1e-6:
+                        parts[k].append((i, tri[w[i]], us[j]))
+                    else:
+                        for ct in clip_tri_u(tri[w[i]], us[j], a, b):
+                            parts[k].append((i, ct, ct[:, :2] @ t[i]))
+            mb = walls_by_style[pstyle]
+            for k, part in enumerate(parts):
+                if not part:
+                    continue
+                pu = np.array([pu_ for _, _, pu_ in part])
+                pz = np.array([p3[:, 2] for _, p3, _ in part])
+                u0 = edges[k]
+                width = edges[k + 1] - u0
+                zb, zt = pz.min(), pz.max()
+                if split and width > 0.5:
+                    s = np.linspace(u0 + 0.05, u0 + width - 0.05, max(int(width / 0.4), 3))
+                    top, _ = _profile(pu, pz, s)
+                    top = top[np.isfinite(top)]
+                    eave = float(top.min()) if len(top) else zt
+                    if stats is not None and eave < zt - 1.0:
+                        stats["gable_parts"] += 1
+                else:
+                    eave = zt
+                pseed = seed
+                if shop_fn is not None and width >= 4.0 and zb < 1.0 and eave > 5.5:
+                    allp = np.vstack([p3 for _, p3, _ in part])
+                    if shop_fn(allp[:, :2].mean(0), nrm[w[part[0][0]], :2]):
+                        pseed = seed + 2.0
+                for (i, p3, pu_) in part:
+                    mb.add(p3, [nrm[w[i]]] * 3, np.column_stack([pu_ - u0, p3[:, 2]]), [[width, pseed]] * 3, [[0, 1, 2]],
+                           [[zb, eave]] * 3)
     for fi in np.where(~is_wall)[0]:
         p3 = tri[fi]
         roofs.add(p3, [nrm[fi]] * 3, p3[:, :2], [[0.0, seed]] * 3, [[0, 1, 2]])
@@ -545,11 +758,35 @@ def build_markings(rdir, road_area):
     return clip(white), clip(yellow)
 
 
-def main(region):
+def model_style(b, styler, seed, found=None):
+    """(facade class, per-face rule or None) of a Cambridge 3D model: garden walls, landmarks (landmarks_table.py),
+    then the region styler; slender structures (chimneys, stair towers) and park monuments lose their windows."""
+    if b.poi_type.lower() == "wall":
+        return "wall", None                     # garden / river walls are modelled too: plain stone, no windows
+    lm = LM.LANDMARKS.get(b.building_id.strip())
+    if lm:
+        if found is not None:
+            found.setdefault(b.building_id, {"name": lm["name"], "models": 0})["models"] += 1
+        return lm["style"], LM.face_rule(lm)
+    style = styler(b.building_id, b.name, b.height_m, seed, b.poi_type, b.vertices[:, :2].mean(0))
+    from shapely.geometry import MultiPoint
+    a = MultiPoint(b.vertices[:, :2]).convex_hull.area
+    h = float(b.vertices[:, 2].max())
+    if a < LM.SLENDER_MAX_M2 and h > LM.SLENDER_MIN_H:
+        return LM.windowless(style), None
+    if (not b.building_id.strip() and not b.name and not b.poi_type and a < LM.MONUMENT_MAX_M2
+            and h > max(LM.MONUMENT_MIN_H, 1.6 * a ** 0.5)):
+        return "stone_blank", None              # monuments: light grey granite, no windows
+    return style, None
+
+
+def main(region, out=None):
+    """out: write the glbs + manifest there instead of data/processed/<region>/meshes (trial runs: the import reads
+    the region's meshes folder, so a trial must not wipe it)."""
     frame = Frame()
     rdir = ROOT / "data/processed" / region
-    out = rdir / "meshes"
-    out.mkdir(exist_ok=True)
+    out = Path(out) if out else rdir / "meshes"
+    out.mkdir(parents=True, exist_ok=True)
     for old in (g for g in out.glob("*.glb") if " " not in g.name):   # leave iCloud conflict copies alone
         old.unlink()
 
@@ -618,6 +855,7 @@ def main(region):
     skipped_poi = [{"model_id": b.model_id, "name": b.name, "poi": b.poi_type} for b in all_models
                    if poi_has(b.poi_type, skip_poi, strict)]
     models = [b for b in all_models if not poi_has(b.poi_type, skip_poi, strict)]
+    models, duplicates = dedupe_models(models)
     modelled_ids = {b.building_id for b in models if b.building_id}
     from shapely.geometry import MultiPoint
     modelled_area = unary_union([MultiPoint(b.vertices[:, :2]).convex_hull for b in models])
@@ -634,14 +872,16 @@ def main(region):
     harvard_shop = styler.harvard
     shop_ok = lambda bid, style, seed, poi="": (shop_fn if style in SHOP_STYLES and not bid.startswith("668-") and seed < 0.85
                                                  and not (harvard_shop and poi.strip().lower() == HARVARD_POI) else None)
+    face_stats = defaultdict(int)
+    landmarks_found = {}
     for b in models:
         seed = seed_of(b.model_id)
-        # garden / river walls are modelled too: plain stone, no windows
-        style = "wall" if b.poi_type.lower() == "wall" else styler(
-            b.building_id, b.name, b.height_m, seed, b.poi_type, b.vertices[:, :2].mean(0))
+        style, face_rule = model_style(b, styler, seed, landmarks_found)
         styles_used[style] += 1
-        add_building_faces(walls_by_style, roofs, b.vertices, b.faces, style, seed,
-                           shop_ok(b.building_id, style, seed, b.poi_type))
+        faces = LG.apply(b.building_id.strip(), b.vertices, b.faces, walls_by_style, roofs, seed)   # hero meshes
+        add_building_faces(walls_by_style, roofs, b.vertices, faces, style, seed,
+                           shop_ok(b.building_id, style, seed, b.poi_type), face_rule, face_stats,
+                           wall_nz=LM.LANDMARKS.get(b.building_id.strip(), {}).get("wall_nz", WALL_NZ))
 
     fallback = 0
     for g, p in load(rdir, "BASEMAP_Buildings"):
@@ -678,6 +918,7 @@ def main(region):
         "pivot_ue_cm": [pivot[0] * 100.0, -pivot[1] * 100.0, 0.0],
         "triangles": stats,
         "buildings": {"models_3d": len(models), "fallback_extrusions": fallback, "styles": dict(styles_used),
+                      "wall_faces": dict(face_stats), "landmarks": landmarks_found, "duplicate_models_dropped": duplicates,
                       "walls_reseated": reseated, "walls_dropped_in_buildings": walls_dropped,
                       **({"tiles": tiles, "skipped_poi": skipped_poi, "style_rule": dict(styler.source)} if bcfg else {}),
                       **(road_check or {})},
@@ -742,12 +983,12 @@ def build_context(region, frame, region_poly, out, pivot, styler=None):
 
     walls_by_style = defaultdict(MeshBuilder)
     roofs = MeshBuilder()
-    models = [b for b in buildings3d.load(tiles, ring, frame) if not poi_has(b.poi_type, skip_poi, bool(bcfg))]
+    models = dedupe_models([b for b in buildings3d.load(tiles, ring, frame) if not poi_has(b.poi_type, skip_poi, bool(bcfg))])[0]
     for b in models:
         seed = seed_of(b.model_id)
         style = (styler(b.building_id, b.name, b.height_m, seed, b.poi_type, b.vertices[:, :2].mean(0)) if styler
                  else facade_style(b.building_id, b.name, b.height_m, seed))
-        add_building_faces(walls_by_style, roofs, b.vertices, b.faces, style, seed)
+        add_building_faces(walls_by_style, roofs, b.vertices, b.faces, style, seed, split=False)
     # Boston skyline (City of Boston 3D model): the river bank and anything taller than 12 m
     river = water.buffer(0)
     keep = lambda e, n, h: h >= 12.0 or river.distance(Point(e, n)) < 400.0
@@ -755,7 +996,8 @@ def build_context(region, frame, region_poly, out, pivot, styler=None):
     for b in bos:
         seed = seed_of(b.model_id)
         e = float(b.vertices[:, 0].mean())
-        add_building_faces(walls_by_style, roofs, b.vertices, b.faces, boston_style(b.name, b.height_m, e, seed), seed)
+        add_building_faces(walls_by_style, roofs, b.vertices, b.faces, boston_style(b.name, b.height_m, e, seed), seed,
+                           split=False)
     for style in STYLES:
         if style in walls_by_style:
             emit(f"ctx_facade_{style}", walls_by_style[style])
@@ -766,4 +1008,9 @@ def build_context(region, frame, region_poly, out, pivot, styler=None):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "mit_core")
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("region", nargs="?", default="mit_core")
+    ap.add_argument("--out", help="output folder (default data/processed/<region>/meshes)")
+    a = ap.parse_args()
+    main(a.region, a.out)

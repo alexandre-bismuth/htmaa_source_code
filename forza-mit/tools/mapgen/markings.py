@@ -1,10 +1,10 @@
 """Extract road markings from the orthophoto (fetch_ortho.py) inside the road polygons.
 
 Usage:  uv run markings.py mit_core [--blank]
-        --blank writes a 256 px all-black placeholder instead. The ground shader no longer samples this
-        texture (every ground class has P1.w = 0; vector paint from TRAFFIC_PavementMarkings replaced it in
-        build_meshes.py), but build_materials.py still imports T_Markings. On a 16k ortho the extraction
-        would need several 3 GB float images for no visible result.
+        --blank writes a 256 px all-black placeholder instead. Nothing reads markings.png any more: vector paint
+        from TRAFFIC_PavementMarkings (build_meshes.py, shaders/paint.hlsl) replaced it and build_materials.py stopped
+        importing T_Markings in round v2 (2026-10-27). Kept for reference only; on a 16k ortho the extraction would
+        need several 3 GB float images for no visible result.
 Output: data/processed/<region>/ortho/markings.png  (R = white paint, G = yellow paint; blurred so the
         shader can threshold it into crisp anti-aliased lines), same extent as ortho.jpg.
 
