@@ -63,8 +63,10 @@ public:
 	/** The launch menu parks the car behind it: no engine sound until it closes. */
 	void SetEngineSoundMuted(bool bMuted);
 
-	/** Boost pressure 0..1 (for HUD / sound): the spool state, scaled by how much the turbo makes at this rpm */
+	/** Boost pressure 0..1 (for HUD / sound): builds only under load above ~2400 rpm, with the spool lag */
 	UFUNCTION(BlueprintPure, Category = "Engine") float GetBoost() const { return BoostPressure; }
+	/** Engine rpm as heard: Chaos' rpm, or the slipping clutch's while pulling away from a standstill */
+	float GetSoundRPM() const { return SoundRPM; }
 	/** The throttle the engine gets (after traction control; the brake key in keyboard reverse) */
 	float GetEngineThrottle() const { return EngineThrottle; }
 	/** The driver's own throttle pedal, before traction control (lifting off, not a TC cut, dumps the boost) */
@@ -111,6 +113,8 @@ private:
 
 	float Boost = 0.0f;
 	float BoostPressure = 0.0f;
+	float SoundRPM = 0.0f;
+	bool bPullingAway = true;        // in 1st / reverse since (nearly) stopped, throttle held and the clutch not yet locked
 	float EngineThrottle = 0.0f;
 	float DriverPedal = 0.0f;
 	float AppliedMaxTorque = PeakTorque;

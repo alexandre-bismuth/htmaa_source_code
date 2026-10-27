@@ -57,8 +57,8 @@ LIMITER_RPM = 7900.0
 LIMITER_HZ = 14.0
 SHIFT_RPM_FALL = 4000.0
 POP_VOLUME = 0.40
-WHISTLE_VOLUME = 0.0093   # whistle + blow-off -4.2 dB (round 3: "25 % quieter")
-BLOWOFF_VOLUME = 0.124
+WHISTLE_VOLUME = 0.0078   # whistle + blow-off -4.2 dB (round 3: "25 % quieter"), then -1.5 dB (2026-10-27)
+BLOWOFF_VOLUME = 0.104
 WHISTLE_RPM_FROM, WHISTLE_RPM_TO, WHISTLE_RPM_GAIN_MAX = 4750.0, 7400.0, 3.1   # whistle ~10 dB under the engine's band above 4750
 MASTER_VOLUME = 2.4         # StiEngineAudio MasterVolume (2.0 until 2026-10-08), x the player's engine volume (1.0)
 F32_HALF_PI = np.float32(1.57079632679)      # UE_HALF_PI
@@ -178,6 +178,7 @@ class Mixer:
         self.last_pop = now
 
     def tick(self, dt, now, rpm_engine, throttle, boost, gear, target_gear, brake=0.0, reverse_as_brake=True):
+        """rpm_engine: the engine as heard (AImprezaSTi::GetSoundRPM: with the clutch slip while pulling away)."""
         rpms = self.rpms
         # the pedal that drives the car: in keyboard reverse (Chaos bReverseAsBrake) the brake key
         if gear < 0 and reverse_as_brake:
@@ -188,10 +189,9 @@ class Mixer:
             self.phase_err[i] = wrap_cycles(self.phase_err[i] + (self.voice_pitch[i] * rpms[i] - self.lock_rpm) / 120.0 * dt)
 
         rpm = rpm_engine
-        slip_rpm = REVERSE_LAUNCH_RPM if gear < 0 else LAUNCH_RPM
-        if gear in (1, -1) and rpm < slip_rpm and throttle > 0.05:
-            rpm = rpm + (slip_rpm - rpm) * throttle
         shifting = gear == 0 and target_gear != 0
+        # (this car's gear changes set the target gear, like the game's manual; the game's automatic leaves it at 1 and
+        # StiEngineAudio tells its upshifts by the rpm)
         if shifting and not self.was_shifting and target_gear > self.last_drive_gear and self.last_drive_gear >= 1:
             if boost > 0.45 and now - self.last_blowoff > 0.5:
                 self.last_blowoff = now
@@ -287,6 +287,12 @@ FINAL, WHEEL_R, MASS = 3.9, 0.317, 1545.0
 GEAR_CHANGE_TIME, MAX_RPM, IDLE_RPM, CHANGE_UP = 0.25, 8000.0, 925.0, 7400.0
 
 
+def smoothstep(a, b, x):
+    """FMath::SmoothStep"""
+    x = min(max((x - a) / (b - a), 0.0), 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
 def torque(rpm):
     return float(np.interp(rpm, TORQUE[:, 0], TORQUE[:, 1]))
 
@@ -294,6 +300,7 @@ def torque(rpm):
 class Car:
     def __init__(self):
         self.rpm, self.v, self.boost, self.pressure = IDLE_RPM, 0.0, 0.0, 0.0
+        self.sound_rpm, self.pulling_away = IDLE_RPM, True
         self.gear = self.target_gear = 0
         self.change_left = 0.0
 
@@ -323,8 +330,14 @@ class Car:
         target = 0.0 if self.gear < 0 else throttle       # no boost in reverse
         tau = np.interp(eng_rpm, [2000, 4500], [1.1, 0.35]) if target > self.boost else 0.15
         self.boost += (target - self.boost) * (1 - math.exp(-dt / tau))
-        x = min(max((eng_rpm - 1800.0) / 1800.0, 0.0), 1.0)
-        self.pressure = self.boost * x * x * (3.0 - 2.0 * x)  # what the gauge and the sound get (GetBoost)
+        # as heard: the clutch only slips while pulling away from (nearly) a standstill; the pressure (gauge, sound)
+        # builds under load from ~2400 rpm of the wheel-tied engine (not the slip revs), with the spool lag
+        self.pulling_away = self.gear in (1, -1) and (self.v < 0.55 or (self.pulling_away and throttle > 0.05
+                                                                         and self.rpm < slip_rpm))
+        self.sound_rpm = self.rpm + (slip_rpm - self.rpm) * throttle if self.pulling_away and self.rpm < slip_rpm else self.rpm
+        p_target = 0.0 if self.gear < 0 else smoothstep(0.35, 0.95, throttle) * smoothstep(2400.0, 4000.0, self.rpm)
+        p_tau = np.interp(self.rpm, [2000, 4500], [1.1, 0.35]) if p_target > self.pressure else 0.15
+        self.pressure += (p_target - self.pressure) * (1 - math.exp(-dt / p_tau))   # what the gauge and the sound get
         reverse_limit = min(max((45.0 - self.v * 3.6) / 5.0, 0.0), 1.0) if self.gear < 0 else 1.0
         tq = torque(eng_rpm) * (0.55 + 0.45 * self.boost) * throttle * reverse_limit
         if self.gear == 0:      # free revving (neutral or mid-shift): part throttle is plenty unloaded
@@ -357,7 +370,7 @@ def drive():
     def tick(throttle, brake=0.0, auto=False):
         nonlocal t
         car.step(TICK, throttle, brake, auto)
-        out.append((t, car.rpm, throttle, car.pressure, car.gear, car.target_gear, car.v))
+        out.append((t, car.sound_rpm, throttle, car.pressure, car.gear, car.target_gear, car.v))
         t += TICK
 
     def hold(seconds, throttle=0.0, brake=0.0, auto=False, stop=None):
@@ -399,7 +412,7 @@ def drive_reverse():
         end = t + seconds
         while t < end - 1e-9:
             car.step(TICK, 0.0, brake, False)
-            out.append((t, car.rpm, 0.0, car.pressure, car.gear, car.target_gear, car.v, brake))
+            out.append((t, car.sound_rpm, 0.0, car.pressure, car.gear, car.target_gear, car.v, brake))
             t += TICK
 
     hold(2.0, 0.0)

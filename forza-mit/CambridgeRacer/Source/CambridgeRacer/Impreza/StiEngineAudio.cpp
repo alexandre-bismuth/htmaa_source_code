@@ -23,15 +23,13 @@ namespace
 	                                          // the upper ones don't: halfway between equal-power and linear
 	constexpr float LoadCurve = 0.75f;        // on/off gains: Load^0.75 / (1-Load)^0.75 (partly coherent pair)
 	constexpr float RelockGain = 0.15f;       // silent loops: pitch nudge per cycle of phase error
-	constexpr float LaunchRpm = 4000.0f;      // AImprezaSTi::ClutchSlipRPM (clutch slip at launch)
-	constexpr float ReverseLaunchRpm = 2200.0f; // AImprezaSTi::ReverseSlipRPM
 	constexpr float EngineLoopGain = 1.1f;    // engine loops +0.8 dB over the turbo / tyres (2026-10-26: "very slightly" louder)
 	constexpr float LimiterRpm = 7900.0f;     // Chaos MaxRPM is 8000
 	constexpr float LimiterHz = 14.0f;        // fuel-cut bounce rate
 	constexpr float ShiftRpmFall = 4000.0f;   // rpm/s the engine falls with the clutch in
 	constexpr float PopVolume = 0.40f;
-	constexpr float WhistleVolume = 0.0093f;   // whistle + blow-off: -4.2 dB = "25 % quieter" to the ear (round 3)
-	constexpr float BlowOffVolume = 0.124f;
+	constexpr float WhistleVolume = 0.0078f;   // whistle + blow-off: -4.2 dB = "25 % quieter" to the ear (round 3),
+	constexpr float BlowOffVolume = 0.104f;    // then -1.5 dB (2026-10-27)
 	// The on-load loops' 1.2-2.6 kHz band (where the whistle sits) grows ~14 dB from 4750 to 7400 rpm: at a fixed level
 	// the whistle was ~0 dB under it at 3000-4000 rpm but -13 dB at 5950 and -21 dB at 7400 (inaudible on boost, where
 	// the game is mostly driven). Its level rises with rpm above 4750 (x WhistleRpmGainMax at 7400) so it stays ~10 dB
@@ -184,17 +182,17 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 		PhaseErr[i] = WrapCycles(PhaseErr[i] + (VoicePitch[i] * Rpms[i] - LockRpm) / 120.0f * DeltaTime);
 	}
 
-	// --- engine rpm as heard
-	float Rpm = Move->GetEngineRotationSpeed();
-	// launch: Chaos ties the engine to the wheels; the car slips the clutch up to LaunchRpm in 1st (less in reverse)
-	const float SlipRpm = Gear < 0 ? ReverseLaunchRpm : LaunchRpm;
-	if ((Gear == 1 || Gear == -1) && Rpm < SlipRpm && Throttle > 0.05f)
-	{
-		Rpm = FMath::Lerp(Rpm, SlipRpm, Throttle);
-	}
+	// --- engine rpm as heard: Chaos ties the engine to the wheels; pulling away from a standstill the car slips the
+	// clutch up to 4000 rpm in 1st (2200 in reverse), rolling in 1st it doesn't (AImprezaSTi::UpdateEngine)
+	float Rpm = Car->GetSoundRPM();
 	// gear change: Chaos sits in neutral (gear 0) for GearChangeTime; the engine falls with the clutch in
 	const bool bShifting = Gear == 0 && TargetGear != 0;
-	if (bShifting && !bWasShifting && TargetGear > LastDriveGear && LastDriveGear >= 1)
+	// an upshift: to a higher selected gear, or the automatic changing up (it leaves the target gear at 1, and changes
+	// up at ChangeUpRPM, down at ChangeDownRPM; until 2026-10-27 its upshifts never blew off)
+	const FVehicleTransmissionConfig& Box = Move->TransmissionSetup;
+	const bool bUpshift = Car->bAutoShift ? Move->GetEngineRotationSpeed() > 0.5f * (Box.ChangeUpRPM + Box.ChangeDownRPM)
+		: TargetGear > LastDriveGear;
+	if (bShifting && !bWasShifting && bUpshift && LastDriveGear >= 1)
 	{
 		// upshift: the turbo dumps its charge, sometimes a pop
 		if (BlowOff && Boost > 0.45f && Now - LastBlowOff > 0.5)

@@ -367,9 +367,23 @@ void AImprezaSTi::UpdateEngine(float Delta)
 		? FMath::GetMappedRangeValueClamped(FVector2f(2000.0f, 4500.0f), FVector2f(SpoolTimeLowRPM, SpoolTimeHighRPM), EngineRPM)
 		: BoostDecayTime;
 	Boost += (Target - Boost) * (1.0f - FMath::Exp(-Delta / Tau));
-	// the pressure that makes (gauge, turbo sound): the VF30 gives little below ~2000 rpm and full boost from ~3600. The
-	// torque curve already holds the low-rpm torque, so this is not fed back into the physics
-	BoostPressure = Boost * FMath::SmoothStep(1800.0f, 3600.0f, EngineRPM);
+
+	// engine as heard (sound, boost gauge): the clutch only slips while pulling away from (nearly) a standstill. The
+	// slip torque above applies whenever 1st is below ClutchSlipRPM, but rolling in 1st (a slow turn) the real clutch
+	// is engaged and the engine turns with the wheels: its slip revs there spooled the turbo and fired the blow-off
+	const bool bNearlyStopped = FMath::Abs(Move->GetForwardSpeed()) < 55.0f;   // cm/s (2 km/h)
+	bPullingAway = (Gear == 1 || Gear == -1) && (bNearlyStopped || (bPullingAway && DriveThrottle > 0.05f && RPM < SlipRPM));
+	SoundRPM = bPullingAway && RPM < SlipRPM ? FMath::Lerp(RPM, SlipRPM, DriveThrottle) : RPM;
+	// the pressure the turbo makes (gauge, turbo sound; not fed back into the physics, whose torque curve already holds
+	// the low-rpm torque): only under load (at part throttle the manifold stays below atmospheric) and from ~2400 rpm
+	// of the wheel-tied engine (full boost ~4000), lagging like the spool; none in reverse. (Not the slip revs: a stab
+	// of throttle pulling away blew off at walking pace; in 1st the turbo now comes in from ~20 km/h.)
+	const float PressureTarget = Gear < 0 ? 0.0f
+		: FMath::SmoothStep(0.35f, 0.95f, DriveThrottle) * FMath::SmoothStep(2400.0f, 4000.0f, RPM);
+	const float PressureTau = PressureTarget > BoostPressure
+		? FMath::GetMappedRangeValueClamped(FVector2f(2000.0f, 4500.0f), FVector2f(SpoolTimeLowRPM, SpoolTimeHighRPM), RPM)
+		: BoostDecayTime;
+	BoostPressure += (PressureTarget - BoostPressure) * (1.0f - FMath::Exp(-Delta / PressureTau));
 
 	// The torque curve is the steady-state full-boost curve; boost only adds the transient lag.
 	// reverse limiter: Chaos doesn't rev-limit reverse (a real car tops out ~60 km/h in reverse);
