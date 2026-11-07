@@ -65,6 +65,8 @@ public:
 
 	/** Boost pressure 0..1 (for HUD / sound): builds only under load above ~2400 rpm, with the spool lag */
 	UFUNCTION(BlueprintPure, Category = "Engine") float GetBoost() const { return BoostPressure; }
+	/** No boost now: braking (pedal or key, also on the throttle) or reversing. The boost decays quietly, the blow-off valve stays shut */
+	bool IsBoostCut() const { return bBoostCut; }
 	/** Engine rpm as heard: Chaos' rpm, or the slipping clutch's while pulling away from a standstill */
 	float GetSoundRPM() const { return SoundRPM; }
 	/** The throttle the engine gets (after traction control; the brake key in keyboard reverse) */
@@ -113,6 +115,7 @@ private:
 
 	float Boost = 0.0f;
 	float BoostPressure = 0.0f;
+	bool bBoostCut = false;
 	float SoundRPM = 0.0f;
 	bool bPullingAway = true;        // in 1st / reverse since (nearly) stopped, throttle held and the clutch not yet locked
 	float EngineThrottle = 0.0f;

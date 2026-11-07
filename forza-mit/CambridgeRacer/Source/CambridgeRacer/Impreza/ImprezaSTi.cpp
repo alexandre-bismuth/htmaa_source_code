@@ -361,8 +361,15 @@ void AImprezaSTi::UpdateEngine(float Delta)
 		ClutchScale = Curve->Eval(EngineRPM) / FMath::Max(Curve->Eval(RPM), 1.0f);
 	}
 
-	// turbo spool, driven by the engine's own rpm (none in reverse)
-	const float Target = Gear < 0 ? 0.0f : DriveThrottle;
+	// The turbo is loaded only by the throttle, never while braking (the brake pedal or key, left-foot braking on the
+	// throttle too) or reversing (reverse selected or engaged, or rolling backwards). There the boost decays quietly to
+	// zero: the blow-off valve only opens on a lift of the throttle while boost is allowed (StiEngineAudio). DriverBrake
+	// is the driver's own brake, before automatic reverse swaps the pedals.
+	bBoostCut = DriverBrake > 0.05f || FMath::Min(Gear, Move->GetTargetGear()) < 0 || Move->GetForwardSpeed() < -30.0f;
+	const float TurboLoad = bBoostCut ? 0.0f : DriveThrottle;
+
+	// turbo spool, driven by the engine's own rpm
+	const float Target = TurboLoad;
 	const float Tau = Target > Boost
 		? FMath::GetMappedRangeValueClamped(FVector2f(2000.0f, 4500.0f), FVector2f(SpoolTimeLowRPM, SpoolTimeHighRPM), EngineRPM)
 		: BoostDecayTime;
@@ -376,10 +383,9 @@ void AImprezaSTi::UpdateEngine(float Delta)
 	SoundRPM = bPullingAway && RPM < SlipRPM ? FMath::Lerp(RPM, SlipRPM, DriveThrottle) : RPM;
 	// the pressure the turbo makes (gauge, turbo sound; not fed back into the physics, whose torque curve already holds
 	// the low-rpm torque): only under load (at part throttle the manifold stays below atmospheric) and from ~2400 rpm
-	// of the wheel-tied engine (full boost ~4000), lagging like the spool; none in reverse. (Not the slip revs: a stab
-	// of throttle pulling away blew off at walking pace; in 1st the turbo now comes in from ~20 km/h.)
-	const float PressureTarget = Gear < 0 ? 0.0f
-		: FMath::SmoothStep(0.35f, 0.95f, DriveThrottle) * FMath::SmoothStep(2400.0f, 4000.0f, RPM);
+	// of the wheel-tied engine (full boost ~4000), lagging like the spool. (Not the slip revs: a stab of throttle
+	// pulling away blew off at walking pace; in 1st the turbo comes in from ~20 km/h.)
+	const float PressureTarget = FMath::SmoothStep(0.35f, 0.95f, TurboLoad) * FMath::SmoothStep(2400.0f, 4000.0f, RPM);
 	const float PressureTau = PressureTarget > BoostPressure
 		? FMath::GetMappedRangeValueClamped(FVector2f(2000.0f, 4500.0f), FVector2f(SpoolTimeLowRPM, SpoolTimeHighRPM), RPM)
 		: BoostDecayTime;

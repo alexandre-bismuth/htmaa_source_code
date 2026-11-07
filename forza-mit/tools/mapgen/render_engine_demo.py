@@ -51,7 +51,7 @@ XFADE_SHAPE = 1.5        # cos/sin^1.5: between equal-power (incoherent) and lin
 LOAD_CURVE = 0.75
 RELOCK_GAIN = 0.15
 LAUNCH_RPM = 4000.0
-REVERSE_LAUNCH_RPM = 2200.0  # AImprezaSTi::ReverseSlipRPM (a gentle reverse start, no boost)
+REVERSE_LAUNCH_RPM = 2200.0  # AImprezaSTi::ReverseSlipRPM (a gentle reverse start)
 ENGINE_LOOP_GAIN = 1.1      # engine loops +0.8 dB over the turbo / tyres (2026-10-26)
 LIMITER_RPM = 7900.0
 LIMITER_HZ = 14.0
@@ -177,8 +177,9 @@ class Mixer:
         a.play()
         self.last_pop = now
 
-    def tick(self, dt, now, rpm_engine, throttle, boost, gear, target_gear, brake=0.0, reverse_as_brake=True):
-        """rpm_engine: the engine as heard (AImprezaSTi::GetSoundRPM: with the clutch slip while pulling away)."""
+    def tick(self, dt, now, rpm_engine, throttle, boost, gear, target_gear, brake=0.0, reverse_as_brake=True, boost_cut=False):
+        """rpm_engine: the engine as heard (AImprezaSTi::GetSoundRPM: with the clutch slip while pulling away).
+        boost_cut: AImprezaSTi::IsBoostCut (braking or reversing: the blow-off valve stays shut)."""
         rpms = self.rpms
         # the pedal that drives the car: in keyboard reverse (Chaos bReverseAsBrake) the brake key
         if gear < 0 and reverse_as_brake:
@@ -189,11 +190,12 @@ class Mixer:
             self.phase_err[i] = wrap_cycles(self.phase_err[i] + (self.voice_pitch[i] * rpms[i] - self.lock_rpm) / 120.0 * dt)
 
         rpm = rpm_engine
+        blowoff_ready = boost > 0.45 and not boost_cut     # a lift / upshift with real boost, never the brake
         shifting = gear == 0 and target_gear != 0
         # (this car's gear changes set the target gear, like the game's manual; the game's automatic leaves it at 1 and
         # StiEngineAudio tells its upshifts by the rpm)
         if shifting and not self.was_shifting and target_gear > self.last_drive_gear and self.last_drive_gear >= 1:
-            if boost > 0.45 and now - self.last_blowoff > 0.5:
+            if blowoff_ready and now - self.last_blowoff > 0.5:
                 self.last_blowoff = now
                 b = self.blowoff
                 b.vol = b.vol_prev = self.master * BLOWOFF_VOLUME * boost
@@ -262,7 +264,7 @@ class Mixer:
         whistle_rpm_gain = 1.0 + (WHISTLE_RPM_GAIN_MAX - 1.0) * rpm_x * rpm_x
         self.whistle.vol = self.master * WHISTLE_VOLUME * whistle_rpm_gain * boost * boost * (0.3 + 0.7 * throttle)
         self.whistle.pitch = 0.75 + 0.45 * boost + 0.1 * self.smooth_rpm / 8000.0
-        if self.prev_throttle > 0.6 and throttle < 0.2 and boost > 0.45 and now - self.last_blowoff > 0.8:
+        if blowoff_ready and self.prev_throttle > 0.6 and throttle < 0.2 and now - self.last_blowoff > 0.8:
             self.last_blowoff = now
             b = self.blowoff
             b.vol = b.vol_prev = self.master * BLOWOFF_VOLUME * boost
@@ -300,7 +302,7 @@ def torque(rpm):
 class Car:
     def __init__(self):
         self.rpm, self.v, self.boost, self.pressure = IDLE_RPM, 0.0, 0.0, 0.0
-        self.sound_rpm, self.pulling_away = IDLE_RPM, True
+        self.sound_rpm, self.pulling_away, self.boost_cut = IDLE_RPM, True, False
         self.gear = self.target_gear = 0
         self.change_left = 0.0
 
@@ -320,14 +322,17 @@ class Car:
             self.change_left -= dt
             if self.change_left <= 0:
                 self.gear = self.target_gear
-        # boost (AImprezaSTi::UpdateEngine); keyboard reverse: the brake key drives (Chaos bReverseAsBrake)
+        # boost (AImprezaSTi::UpdateEngine): no load while braking or reversing (here v >= 0: reverse is the gear),
+        # judged on the driver's own brake before keyboard reverse swaps it in as the pedal that drives
+        self.boost_cut = brake > 0.05 or min(self.gear, self.target_gear) < 0
+        load = 0.0 if self.boost_cut else throttle
         if self.gear < 0:
             throttle, brake = max(throttle, brake), 0.0
         eng_rpm = self.rpm
         slip_rpm = REVERSE_LAUNCH_RPM if self.gear < 0 else LAUNCH_RPM
         if self.gear in (1, -1) and self.rpm < slip_rpm and throttle > 0.05:
             eng_rpm = self.rpm + (slip_rpm - self.rpm) * throttle
-        target = 0.0 if self.gear < 0 else throttle       # no boost in reverse
+        target = load
         tau = np.interp(eng_rpm, [2000, 4500], [1.1, 0.35]) if target > self.boost else 0.15
         self.boost += (target - self.boost) * (1 - math.exp(-dt / tau))
         # as heard: the clutch only slips while pulling away from (nearly) a standstill; the pressure (gauge, sound)
@@ -335,7 +340,7 @@ class Car:
         self.pulling_away = self.gear in (1, -1) and (self.v < 0.55 or (self.pulling_away and throttle > 0.05
                                                                          and self.rpm < slip_rpm))
         self.sound_rpm = self.rpm + (slip_rpm - self.rpm) * throttle if self.pulling_away and self.rpm < slip_rpm else self.rpm
-        p_target = 0.0 if self.gear < 0 else smoothstep(0.35, 0.95, throttle) * smoothstep(2400.0, 4000.0, self.rpm)
+        p_target = smoothstep(0.35, 0.95, load) * smoothstep(2400.0, 4000.0, self.rpm)
         p_tau = np.interp(self.rpm, [2000, 4500], [1.1, 0.35]) if p_target > self.pressure else 0.15
         self.pressure += (p_target - self.pressure) * (1 - math.exp(-dt / p_tau))   # what the gauge and the sound get
         reverse_limit = min(max((45.0 - self.v * 3.6) / 5.0, 0.0), 1.0) if self.gear < 0 else 1.0
@@ -370,7 +375,7 @@ def drive():
     def tick(throttle, brake=0.0, auto=False):
         nonlocal t
         car.step(TICK, throttle, brake, auto)
-        out.append((t, car.sound_rpm, throttle, car.pressure, car.gear, car.target_gear, car.v))
+        out.append((t, car.sound_rpm, throttle, car.pressure, car.gear, car.target_gear, car.v, brake, car.boost_cut))
         t += TICK
 
     def hold(seconds, throttle=0.0, brake=0.0, auto=False, stop=None):
@@ -412,7 +417,7 @@ def drive_reverse():
         end = t + seconds
         while t < end - 1e-9:
             car.step(TICK, 0.0, brake, False)
-            out.append((t, car.sound_rpm, 0.0, car.pressure, car.gear, car.target_gear, car.v, brake))
+            out.append((t, car.sound_rpm, 0.0, car.pressure, car.gear, car.target_gear, car.v, brake, car.boost_cut))
             t += TICK
 
     hold(2.0, 0.0)
@@ -436,8 +441,8 @@ def render(waves, states, break_lock=False, seed=1, pitch_range=PITCH_RANGE):
     out, eng = [], []
     cycles = [round(len(v.wave) * r / (120.0 * FS)) for v, r in zip(mixer.on, RPMS)]
     mixer.crank_err = []
-    for (t, rpm, th, boost, gear, target, _v, *brake) in states:
-        mixer.tick(TICK, t, rpm, th, boost, gear, target, brake=brake[0] if brake else 0.0)
+    for (t, rpm, th, boost, gear, target, _v, brake, boost_cut) in states:
+        mixer.tick(TICK, t, rpm, th, boost, gear, target, brake=brake, boost_cut=boost_cut)
         y, e = mixer.render(n_tick)
         out.append(y)
         eng.append(e)

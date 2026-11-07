@@ -174,7 +174,11 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 	// pedal: a traction-control cut is not a lift-off and must not dump the boost
 	const float Throttle = FMath::Clamp(Car->GetEngineThrottle(), 0.0f, 1.0f);
 	const float Pedal = FMath::Clamp(Car->GetDriverPedal(), 0.0f, 1.0f);
-	const float Boost = Car->GetBoost();   // pressure: no boost off the rpm band or in reverse
+	const float Boost = Car->GetBoost();   // pressure: none off the rpm band, braking or reversing
+	// the blow-off valve opens only on a lift of the throttle (or an upshift) with real boost, never because of the brake
+	// or reverse (AImprezaSTi::IsBoostCut: there the boost decays quietly). Holding the throttle while the brake goes on
+	// is no lift (the keyboard's brake key zeroes the throttle for a frame), nor is lifting it while braking
+	const bool bBlowOffReady = BlowOff && Boost > 0.45f && !Car->IsBoostCut();
 
 	// --- crank lock: integrate each loop's phase error over the last tick (pitch it actually played at)
 	for (int32 i = 0; i < Rpms.Num(); ++i)
@@ -195,7 +199,7 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 	if (bShifting && !bWasShifting && bUpshift && LastDriveGear >= 1)
 	{
 		// upshift: the turbo dumps its charge, sometimes a pop
-		if (BlowOff && Boost > 0.45f && Now - LastBlowOff > 0.5)
+		if (bBlowOffReady && Now - LastBlowOff > 0.5)
 		{
 			LastBlowOff = Now;
 			BlowOff->SetVolumeMultiplier(Gain * BlowOffVolume * Boost);
@@ -295,7 +299,7 @@ void UStiEngineAudio::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 		Whistle->SetVolumeMultiplier(Gain * WhistleVolume * WhistleRpmGain * Boost * Boost * (0.3f + 0.7f * Throttle));
 		Whistle->SetPitchMultiplier(0.75f + 0.45f * Boost + 0.1f * SmoothRpm / 8000.0f);
 	}
-	if (BlowOff && PrevPedal > 0.6f && Pedal < 0.2f && Boost > 0.45f && Now - LastBlowOff > 0.8)
+	if (bBlowOffReady && PrevPedal > 0.6f && Pedal < 0.2f && Now - LastBlowOff > 0.8)
 	{
 		LastBlowOff = Now;
 		BlowOff->SetVolumeMultiplier(Gain * BlowOffVolume * Boost);
