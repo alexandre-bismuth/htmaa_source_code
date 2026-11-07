@@ -6,6 +6,8 @@
 //   -DriveTestMode=brake         accelerate past 100 km/h, full brake: 100-0 km/h distance
 //   -DriveTestMode=skidpad       hold -DriveTestSpeed (km/h, default 50) while slowly winding on
 //                                steering: peak sustained lateral acceleration
+//   -DriveTestMode=idle          no driving: a wheel drives the car (tools/wheel/wheel_sim.py, -WheelPort); the run
+//                                just ends after -DriveTestSeconds (a clean exit: the wheel gets its closing F 0)
 //   -DriveTestSeconds=N          max length of the manoeuvre (default 40)
 //   -DriveTestTC=off|sport|full  traction control setting for the run (default off: the real car had none)
 //

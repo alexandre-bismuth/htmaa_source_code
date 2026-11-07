@@ -117,6 +117,7 @@ void UDriveTestSubsystem::Tick(float DeltaTime)
 			TopKmh = FMath::Max(TopKmh, FMath::Abs(Kmh));
 			if (T >= 3.0f && T3Reverse < 0.0f) { T3Reverse = FMath::Abs(Kmh); }
 		}
+		else if (Mode == TEXT("idle")) {}   // a wheel (or tools/wheel/wheel_sim.py) drives; the run ends after -DriveTestSeconds
 		else { RunAccel(T, Kmh, DistM, YawErr); }
 		if (Mode == TEXT("skidpad") && T > 4.0f && LatAccelAvg > PeakLatG)
 		{

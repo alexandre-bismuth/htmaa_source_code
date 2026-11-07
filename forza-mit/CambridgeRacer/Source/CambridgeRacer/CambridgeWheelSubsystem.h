@@ -1,16 +1,22 @@
-// The home-built steering wheel / pedals / paddle shifters, over USB CDC serial.
+// The home-built steering wheel / pedals / paddle shifters and its force-feedback base, over USB CDC serial: two boards
+// (the input board and the force-feedback board), or one board doing both (the old reference firmware).
 // Protocol (ASCII lines, see docs/wheel_protocol.md):
-//   device -> game   "W <steer_centideg> <throttle_raw> <brake_raw> <buttons> [<handbrake_raw>]"   ~500 Hz
+//   input board -> game  "W <steer_centideg> <throttle_raw> <brake_raw> <buttons> [<handbrake_raw>]"   ~500 Hz
 //                    buttons: bit0 upshift paddle, bit1 downshift paddle, bit2 start/menu (optional: this wheel has
 //                    none; both paddles pressed together are its start everywhere). handbrake_raw: optional, a lever
 //                    read like the pedals
-//   game -> device   "F <torque_permille>"   -1000..1000, + turns the rim clockwise. Once per frame
-//                    (50-120 Hz, capped at 250 Hz): the firmware should smooth it and do fast damping itself.
-//                    The firmware must drop the motor torque to 0 if no F line came for 100 ms.
-// Port: auto-detects /dev/cu.usbmodem* (a port that sends no samples for 3 s is skipped: another USB
-// serial board), or the Port in Input.ini (ignored if it doesn't exist), or -WheelPort=<path> (e.g. the
-// wheel_sim.py pseudo-terminal; test runs with it save nothing). Reconnects on unplug. Reading runs on its
-// own thread; the game thread reads the latest sample.
+//   ffb board -> game    "I cambridge-ffb 1" (the reply to "?"), "H <flags> <milliamps>" heartbeat at 10 Hz
+//   game -> ffb board    "F <torque_permille>"   -1000..1000, + turns the rim clockwise. Once per frame
+//                    (50-120 Hz, capped at 250 Hz): the firmware smooths it and does fast damping itself, and drops
+//                    the motor torque to 0 if no F line came for 100 ms. F 0 while paused, and when the game closes.
+//                    Without a force-feedback board (none seen this session), F goes to the input board's port: a
+//                    single-board wheel (the input board ignores it).
+// Ports: every /dev/cu.usbmodem* (and the Port in Input.ini first, if it exists) is opened and asked "?"; a port is the
+// input board once it sends W samples, the force-feedback board once it says "I cambridge-ffb" (or sends H). A port that
+// is neither within 3 s is skipped (another USB serial board). -WheelPort=<path> and -WheelFFBPort=<path> (e.g. the
+// wheel_sim.py pseudo-terminals) replace the scan for one run; such test runs save nothing. Each board reconnects on its
+// own, and the game works with either one missing. Reading runs on its own thread; the game thread reads the latest
+// sample.
 // Pedals (and the handbrake) calibrate themselves each session (min / max seen); the saved calibration is only
 // written by the menu's calibration rows (Recalibrate pedals, Centre wheel), when the menu closes.
 
@@ -52,8 +58,10 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** True while a wheel is connected and has sent data recently: it then drives the car. */
+	/** True while the input board (or a single-board wheel) is connected and has sent data recently: it then drives the car. */
 	bool IsActive() const;
+	/** True while the force-feedback board is connected and its heartbeat is coming. */
+	bool IsForceFeedbackActive() const;
 	FWheelInputState GetState() const;
 	/** Rising edges since the last call (paddles, start button). Presses older than half a second (e.g. made
 	 *  while the game was paused) are dropped, so they can't shift the car after the pause. */
@@ -104,25 +112,56 @@ public:
 	virtual void Stop() override { bStopping = true; }
 
 private:
-	bool OpenPort();
-	void ClosePort();
-	FString FindPort();
-	void ParseLine(const char* Line);
-	void Write(const FString& Text);
+	/** What an open port turned out to be. */
+	enum class ELinkRole : uint8 { Probing, Input, Ffb };
+	static constexpr int32 MaxLinks = 4;          // ports open at once (probing several boards together)
+	static constexpr int32 MaxLineLength = 120;   // longer lines are garbage
+	/** One open serial port. The reader thread owns it; Fd, Path, Role and LastHeard change under Lock (the game thread
+	 *  writes F and reads the status), the line buffer is the reader thread's alone. */
+	struct FLink
+	{
+		int32 Fd = -1;                // POSIX file descriptor
+		FString Path;
+		ELinkRole Role = ELinkRole::Probing;
+		double OpenTime = 0.0;
+		double LastAsk = 0.0;         // the last "?" (asked again every second while probing: one sent too early is lost)
+		double LastHeard = 0.0;       // the last valid line of its role
+		bool bDrop = false;           // to be closed by the reader thread (a second board of the same kind, a write error)
+		char Pending[MaxLineLength + 1];
+		int32 PendingLen = 0;
+		bool bOverlong = false;
+	};
+
+	TArray<FString> CandidatePorts();
+	void DiscoverPorts();
+	bool OpenLink(const FString& Path);
+	void CloseLink(int32 Index, const TCHAR* Why);
+	void ReadLink(int32 Index);
+	void ParseLine(int32 Index, const char* Line);
+	int32 FindLinkLocked(ELinkRole Role) const;
+	/** Where F goes: the force-feedback board; without one (and no port still being identified), the input board's port. */
+	int32 ForceFeedbackLinkLocked() const;
+	void WriteLinkLocked(int32 Index, const char* Text, int32 Len);
 	bool ConsumeEdge(bool& bEdge, const double& EdgeTime);   // (the time by reference: read under the lock)
 
 	FRunnableThread* Thread = nullptr;
 	TAtomic<bool> bStopping { false };
 	mutable FCriticalSection Lock;
-	int32 Fd = -1;                   // POSIX file descriptor (owned by the reader thread)
-	FString OpenPath;
-	FString PortOverride;            // -WheelPort (never saved)
+	FLink Links[MaxLinks];
+	TArray<FString> PortOverrides;   // -WheelPort, -WheelFFBPort (never saved): exactly these ports, no scan
 	bool bSessionOnly = false;       // test run: never save the settings
 	bool bLogStatus = false;         // -WheelLog
-	// reader thread only: ports that were opened but sent no samples (skipped by the auto-detection)
+	// reader thread only: ports that were opened but never identified (skipped by the auto-detection until unplugged)
 	TSet<FString> SilentPorts;
 	bool bConfigPortFailed = false;
-	double OpenTime = 0.0;
+	double LastDiscovery = -100.0;
+
+	// the force-feedback board's heartbeat (under Lock)
+	bool bSeenFfbBoard = false;      // a force-feedback board was connected this session: F never goes to the input board
+	int32 FfbFlags = 0;
+	int32 FfbMilliamps = 0;
+	int32 LoggedFfbFlags = -1;
+	int32 FfbTarget = INDEX_NONE;    // game thread: the link F went to last (logged when it changes)
 
 	// raw latest sample (under Lock)
 	int32 RawSteer = 0, RawThrottle = 0, RawBrake = 0, RawHandbrake = 0, Buttons = 0;

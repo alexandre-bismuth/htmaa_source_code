@@ -32,11 +32,13 @@ namespace
 	constexpr double ActiveTimeout = 0.5;      // s without samples -> wheel considered gone
 	constexpr double FFBPeriod = 1.0 / 250.0;
 	constexpr double FFBStale = 0.1;           // s without a fresh torque from the car -> send 0
+	constexpr double FfbActiveTimeout = 0.5;   // s without a heartbeat (10 Hz) -> force-feedback board considered gone
+	constexpr double FfbSilentTimeout = 3.0;   // s without a heartbeat -> its port is closed and looked for again
 	constexpr int32 MinPedalSpan = 200;        // raw counts before a pedal counts as calibrated
-	constexpr double NoDataTimeout = 3.0;      // s after opening without one valid sample -> not the wheel
+	constexpr double NoDataTimeout = 3.0;      // s after opening without being identified -> not one of our boards
+	constexpr double AskInterval = 1.0;        // s between "?" while a port is being identified
 	constexpr double ReconnectDelay = 1.0;     // s between connection attempts (hot-plug)
 	constexpr double MaxEdgeAge = 0.5;         // s: older paddle / button presses are dropped
-	constexpr int32 MaxLine = 120;             // longer lines are garbage
 
 	// test: drive the wheel's buttons / throttle from a shot tour step (a wheel or wheel_sim.py must be connected)
 	FAutoConsoleCommandWithWorldAndArgs WheelTestCmd(TEXT("cr.Wheel.Test"),
@@ -99,10 +101,17 @@ void UCambridgeWheelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	const TCHAR* Cmd = FCommandLine::Get();
-	// a port from the command line is for this run only (tests with tools/wheel/wheel_sim.py): it is never
+	// ports from the command line are for this run only (tests with tools/wheel/wheel_sim.py): they are never
 	// written into Port, and nothing is saved in such runs, so they can't overwrite the player's calibration
-	FParse::Value(Cmd, TEXT("WheelPort="), PortOverride);
-	bSessionOnly = !PortOverride.IsEmpty() || FCString::Strifind(Cmd, TEXT("-ShotTour")) || FCString::Strifind(Cmd, TEXT("-DriveTest"));
+	for (const TCHAR* Key : { TEXT("WheelPort="), TEXT("WheelFFBPort=") })
+	{
+		FString Override;
+		if (FParse::Value(Cmd, Key, Override) && !Override.IsEmpty())
+		{
+			PortOverrides.AddUnique(Override);
+		}
+	}
+	bSessionOnly = !PortOverrides.IsEmpty() || FCString::Strifind(Cmd, TEXT("-ShotTour")) || FCString::Strifind(Cmd, TEXT("-DriveTest"));
 	bLogStatus = FParse::Param(Cmd, TEXT("WheelLog"));
 	// sanitize what Input.ini gave us: a broken calibration is ignored (the pedals calibrate themselves)
 	RotationRangeDeg = FMath::Clamp(FMath::IsFinite(RotationRangeDeg) ? RotationRangeDeg : 540.0f, 180.0f, 1080.0f);
@@ -135,7 +144,10 @@ void UCambridgeWheelSubsystem::Deinitialize()
 		delete Thread;
 		Thread = nullptr;
 	}
-	ClosePort();
+	for (int32 i = 0; i < MaxLinks; ++i)
+	{
+		CloseLink(i, TEXT("game closing"));     // (sends F 0 first)
+	}
 	Super::Deinitialize();
 }
 
@@ -147,7 +159,26 @@ TStatId UCambridgeWheelSubsystem::GetStatId() const
 bool UCambridgeWheelSubsystem::IsActive() const
 {
 	FScopeLock L(&Lock);
-	return Fd >= 0 && SampleCount > 0 && FPlatformTime::Seconds() - LastSampleTime < ActiveTimeout;
+	return FindLinkLocked(ELinkRole::Input) >= 0 && SampleCount > 0 && FPlatformTime::Seconds() - LastSampleTime < ActiveTimeout;
+}
+
+bool UCambridgeWheelSubsystem::IsForceFeedbackActive() const
+{
+	FScopeLock L(&Lock);
+	const int32 i = FindLinkLocked(ELinkRole::Ffb);
+	return i >= 0 && FPlatformTime::Seconds() - Links[i].LastHeard < FfbActiveTimeout;
+}
+
+int32 UCambridgeWheelSubsystem::FindLinkLocked(ELinkRole Role) const
+{
+	for (int32 i = 0; i < MaxLinks; ++i)
+	{
+		if (Links[i].Fd >= 0 && Links[i].Role == Role)
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
 }
 
 FWheelInputState UCambridgeWheelSubsystem::GetState() const
@@ -314,10 +345,19 @@ void UCambridgeWheelSubsystem::SaveSettings()
 
 FString UCambridgeWheelSubsystem::GetStatusText() const
 {
+	// the force-feedback board, after the input: "FFB" (its soft end stops armed), "FFB, turn to find the centre"
+	FString Ffb;
+	if (IsForceFeedbackActive())
+	{
+		FScopeLock L(&Lock);
+		Ffb = (FfbFlags & 2) ? TEXT("  FFB") : TEXT("  FFB, turn to find the centre");
+	}
 	if (!IsActive())
 	{
 		FScopeLock L(&Lock);
-		return Fd >= 0 ? FString::Printf(TEXT("%s (no data)"), *FPaths::GetCleanFilename(OpenPath)) : TEXT("not connected");
+		const int32 i = FindLinkLocked(ELinkRole::Input);
+		return (i >= 0 ? FString::Printf(TEXT("%s (no data)"), *FPaths::GetCleanFilename(Links[i].Path))
+			: Ffb.IsEmpty() ? FString(TEXT("not connected")) : FString(TEXT("no input board"))) + Ffb;
 	}
 	const FWheelInputState S = GetState();
 	bool bPedalsCalibrated, bHandbrakeCalibrated;
@@ -327,62 +367,94 @@ FString UCambridgeWheelSubsystem::GetStatusText() const
 		bHandbrakeCalibrated = ValidPedalRange(CalHandbrakeMin, CalHandbrakeMax);
 	}
 	const FString Handbrake = bHandbrakeCalibrated ? FString::Printf(TEXT("  H %.0f%%"), S.Handbrake * 100.0f) : FString();
-	return bPedalsCalibrated
+	return (bPedalsCalibrated
 		? FString::Printf(TEXT("%.0f deg  T %.0f%%  B %.0f%%%s"), S.SteerDeg, S.Throttle * 100.0f, S.Brake * 100.0f, *Handbrake)
-		: FString::Printf(TEXT("%.0f deg  press both pedals%s"), S.SteerDeg, *Handbrake);
+		: FString::Printf(TEXT("%.0f deg  press both pedals%s"), S.SteerDeg, *Handbrake)) + Ffb;
 }
 
 void UCambridgeWheelSubsystem::Tick(float DeltaTime)
 {
 	const double Now = FPlatformTime::Seconds();
-	if (IsActive())
+	const bool bInput = IsActive();
+	float Torque;
 	{
-		float Torque;
+		FScopeLock L(&Lock);
+		// the car's torque while the wheel drives it; 0 when that is stale (the game paused, a menu, the car gone) or the
+		// keyboard drives: the force-feedback board then gets F 0 (its damping and soft stops stay on)
+		Torque = (bInput && Now - LastTorqueTime < FFBStale) ? PendingTorque : 0.0f;
+		const int32 Target = ForceFeedbackLinkLocked();
+		if (Target != FfbTarget)
 		{
-			FScopeLock L(&Lock);
-			Torque = (Now - LastTorqueTime < FFBStale) ? PendingTorque : 0.0f;   // car gone / paused -> no force
+			FfbTarget = Target;
+			UE_LOG(LogWheel, Display, TEXT("wheel: force feedback -> %s"), Target < 0 ? TEXT("none")
+				: *FString::Printf(TEXT("%s (%s)"), *Links[Target].Path,
+					Links[Target].Role == ELinkRole::Ffb ? TEXT("force-feedback board") : TEXT("the input board's port: single-board wheel")));
 		}
-		if (Now - LastSendTime >= FFBPeriod)
+		if (Target >= 0 && Now - LastSendTime >= FFBPeriod)
 		{
 			LastSendTime = Now;
 			const int32 Permille = FMath::Clamp(FMath::RoundToInt(Torque * FMath::Clamp(ForceFeedbackStrength, 0.0f, 1.0f) * 1000.0f), -1000, 1000);
-			Write(FString::Printf(TEXT("F %d\n"), Permille));
-		}
-		if (bLogStatus && Now - LastLogTime > 1.0)
-		{
-			LastLogTime = Now;
-			int32 Bad;
-			{
-				FScopeLock L(&Lock);
-				Bad = BadLines;
-			}
-			UE_LOG(LogWheel, Display, TEXT("wheel: %s  ffb %.2f  bad lines %d"), *GetStatusText(), Torque, Bad);
+			ANSICHAR Buf[24];
+			const int32 N = FCStringAnsi::Snprintf(Buf, sizeof(Buf), "F %d\n", Permille);
+			WriteLinkLocked(Target, Buf, N);
 		}
 	}
+	if (bLogStatus && Now - LastLogTime > 1.0 && (bInput || IsForceFeedbackActive()))
+	{
+		LastLogTime = Now;
+		int32 Bad;
+		FString Ffb = TEXT("no ffb board");
+		{
+			FScopeLock L(&Lock);
+			Bad = BadLines;
+			if (const int32 i = FindLinkLocked(ELinkRole::Ffb); i >= 0)
+			{
+				Ffb = FString::Printf(TEXT("ffb board %s flags %d %d mA"), *FPaths::GetCleanFilename(Links[i].Path), FfbFlags, FfbMilliamps);
+			}
+		}
+		UE_LOG(LogWheel, Display, TEXT("wheel: %s  ffb %.2f  bad lines %d  %s"), *GetStatusText(), Torque, Bad, *Ffb);
+	}
+}
+
+int32 UCambridgeWheelSubsystem::ForceFeedbackLinkLocked() const
+{
+	const int32 Ffb = FindLinkLocked(ELinkRole::Ffb);
+	if (Ffb >= 0)
+	{
+		return Ffb;
+	}
+	// no force-feedback board: the input board's port, for a single-board wheel (the old reference firmware takes F
+	// there) - never in a rig that had a force-feedback board this session (it is only unplugged for now), and only once
+	// no port is still being identified (the force-feedback board may be one of them)
+	return bSeenFfbBoard || FindLinkLocked(ELinkRole::Probing) >= 0 ? INDEX_NONE : FindLinkLocked(ELinkRole::Input);
 }
 
 // ------------------------------------------------------------------ serial (reader thread)
 
-FString UCambridgeWheelSubsystem::FindPort()
+TArray<FString> UCambridgeWheelSubsystem::CandidatePorts()
 {
+	TArray<FString> Out;
 #if CAMBRIDGE_WHEEL_POSIX
-	if (!PortOverride.IsEmpty())
+	if (!PortOverrides.IsEmpty())
 	{
-		return PortOverride;
+		return PortOverrides;      // test run: exactly these, never a scan
 	}
-	// a port set in Input.ini, if it exists. Never a pseudo-terminal (/dev/ttys*): that is somebody's
+	// a port set in Input.ini first, if it exists. Never a pseudo-terminal (/dev/ttys*): that is somebody's
 	// terminal window (a leftover from a wheel_sim.py test), and the game would type into it
 	if (!Port.IsEmpty() && Port != TEXT("auto") && !bConfigPortFailed)
 	{
 		struct stat St;
 		if (!Port.StartsWith(TEXT("/dev/ttys")) && stat(TCHAR_TO_UTF8(*Port), &St) == 0 && S_ISCHR(St.st_mode))
 		{
-			return Port;
+			Out.Add(Port);
 		}
-		UE_LOG(LogWheel, Display, TEXT("wheel: port %s from Input.ini is not usable, auto-detecting"), *Port);
-		bConfigPortFailed = true;
+		else
+		{
+			UE_LOG(LogWheel, Display, TEXT("wheel: port %s from Input.ini is not usable, auto-detecting"), *Port);
+			bConfigPortFailed = true;
+		}
 	}
-	// auto: USB CDC devices (macOS cu.usbmodem*, Linux ttyACM*), skipping the ones that sent nothing.
+	// auto: USB CDC devices (macOS cu.usbmodem*, Linux ttyACM*), skipping the ones that never answered.
 	// (IFileManager::FindFiles can't be used: /dev entries are neither files nor directories to it.)
 	TArray<FString> Found;
 	if (DIR* Dir = opendir("/dev"))
@@ -397,25 +469,74 @@ FString UCambridgeWheelSubsystem::FindPort()
 		closedir(Dir);
 	}
 	Found.Sort();
+	// a silent port that was unplugged is forgotten: plugged back in, it is asked again
+	for (auto It = SilentPorts.CreateIterator(); It; ++It)
+	{
+		if (!Found.Contains(*It))
+		{
+			It.RemoveCurrent();
+		}
+	}
 	for (const FString& P : Found)
 	{
 		if (!SilentPorts.Contains(P))
 		{
-			return P;
+			Out.AddUnique(P);
 		}
 	}
-	SilentPorts.Reset();      // all of them were silent: try them all again (the wheel may have been busy)
-	return Found.Num() ? Found[0] : FString();
-#else
-	return FString();
 #endif
+	return Out;
 }
 
-bool UCambridgeWheelSubsystem::OpenPort()
+void UCambridgeWheelSubsystem::DiscoverPorts()
+{
+	bool bHaveInput, bHaveFfb, bProbing;
+	TSet<FString> Open;
+	{
+		FScopeLock L(&Lock);
+		bHaveInput = FindLinkLocked(ELinkRole::Input) >= 0;
+		bHaveFfb = FindLinkLocked(ELinkRole::Ffb) >= 0;
+		bProbing = FindLinkLocked(ELinkRole::Probing) >= 0;
+		for (const FLink& K : Links)
+		{
+			if (K.Fd >= 0)
+			{
+				Open.Add(K.Path);
+			}
+		}
+	}
+	if (bHaveInput && bHaveFfb)
+	{
+		return;
+	}
+	int32 Opened = 0;
+	for (const FString& P : CandidatePorts())
+	{
+		if (!Open.Contains(P) && OpenLink(P))
+		{
+			++Opened;
+		}
+	}
+	// nothing new to ask and still no input board: every port was silent, so ask them all again (the wheel may have
+	// been busy). Not for a missing force-feedback board alone: unrelated USB serial boards would be asked forever
+	if (Opened == 0 && !bHaveInput && !bProbing && !SilentPorts.IsEmpty())
+	{
+		SilentPorts.Reset();
+	}
+}
+
+bool UCambridgeWheelSubsystem::OpenLink(const FString& Path)
 {
 #if CAMBRIDGE_WHEEL_POSIX
-	const FString Path = FindPort();
-	if (Path.IsEmpty())
+	int32 Slot = INDEX_NONE;
+	{
+		FScopeLock L(&Lock);
+		for (int32 i = 0; i < MaxLinks && Slot < 0; ++i)
+		{
+			Slot = Links[i].Fd < 0 ? i : INDEX_NONE;
+		}
+	}
+	if (Slot < 0)
 	{
 		return false;
 	}
@@ -436,50 +557,80 @@ bool UCambridgeWheelSubsystem::OpenPort()
 	}
 	{
 		FScopeLock L(&Lock);
-		Fd = NewFd;
-		OpenPath = Path;
-		SampleCount = 0;
-		LastButtons = 0;
-		bEdgeUp = bEdgeDown = bEdgeStart = false;
+		FLink& K = Links[Slot];
+		K = FLink();
+		K.Fd = NewFd;
+		K.Path = Path;
+		K.OpenTime = K.LastAsk = FPlatformTime::Seconds();
+		WriteLinkLocked(Slot, "?\n", 2);
 	}
-	OpenTime = FPlatformTime::Seconds();
 	UE_LOG(LogWheel, Display, TEXT("wheel: opened %s"), *Path);
-	Write(TEXT("?\n"));
 	return true;
 #else
 	return false;
 #endif
 }
 
-void UCambridgeWheelSubsystem::ClosePort()
+void UCambridgeWheelSubsystem::CloseLink(int32 Index, const TCHAR* Why)
 {
 #if CAMBRIDGE_WHEEL_POSIX
 	FScopeLock L(&Lock);
-	if (Fd >= 0)
+	FLink& K = Links[Index];
+	if (K.Fd < 0)
+	{
+		return;
+	}
+	if (Index == ForceFeedbackLinkLocked() || K.Role == ELinkRole::Ffb)
 	{
 		const char Zero[] = "F 0\n";
-		write(Fd, Zero, sizeof(Zero) - 1);     // release the rim before letting go
-		close(Fd);
-		Fd = -1;
-		UE_LOG(LogWheel, Display, TEXT("wheel: closed %s"), *OpenPath);
+		write(K.Fd, Zero, sizeof(Zero) - 1);     // release the rim before letting go
 	}
+	close(K.Fd);
+	UE_LOG(LogWheel, Display, TEXT("wheel: closed %s (%s)"), *K.Path, Why);
+	K = FLink();
 #endif
 }
 
-void UCambridgeWheelSubsystem::Write(const FString& Text)
+void UCambridgeWheelSubsystem::WriteLinkLocked(int32 Index, const char* Text, int32 Len)
 {
 #if CAMBRIDGE_WHEEL_POSIX
-	FScopeLock L(&Lock);
-	if (Fd >= 0)
+	FLink& K = Links[Index];
+	if (K.Fd >= 0 && write(K.Fd, Text, Len) < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
 	{
-		const FTCHARToUTF8 Utf8(*Text);
-		write(Fd, Utf8.Get(), Utf8.Length());   // non-blocking; a full buffer just drops this update
+		K.bDrop = true;        // (a full buffer just drops this update; a real error is an unplug: the reader thread closes it)
 	}
 #endif
 }
 
-void UCambridgeWheelSubsystem::ParseLine(const char* Line)
+void UCambridgeWheelSubsystem::ParseLine(int32 Index, const char* Line)
 {
+	const double Now = FPlatformTime::Seconds();
+	// a port proves to be the force-feedback board ("I cambridge-ffb", or its heartbeat if that reply was lost); a second
+	// one is ignored
+	auto BecomeFfbLocked = [this, Index, Now]()
+	{
+		FLink& K = Links[Index];
+		if (K.Role != ELinkRole::Probing)
+		{
+			return K.Role == ELinkRole::Ffb;     // (an input board's stray line changes nothing)
+		}
+		if (FindLinkLocked(ELinkRole::Ffb) >= 0)
+		{
+			UE_LOG(LogWheel, Display, TEXT("wheel: %s is a second force-feedback board: ignored"), *K.Path);
+			SilentPorts.Add(K.Path);
+			K.bDrop = true;
+			return false;
+		}
+		K.Role = ELinkRole::Ffb;
+		K.LastHeard = Now;
+		bSeenFfbBoard = true;
+		FfbFlags = 0;
+		FfbMilliamps = 0;
+		LoggedFfbFlags = -1;
+		UE_LOG(LogWheel, Display, TEXT("wheel: force-feedback board on %s"), *K.Path);
+		return true;
+	};
+
 	// "W <steer> <throttle> <brake> <buttons> [<handbrake>]", strictly: a damaged line (noise, half a line after a
 	// reconnect) must not move the pedal calibration
 	if (Line[0] == 'W' && (Line[1] == ' ' || Line[1] == '\t'))
@@ -496,16 +647,33 @@ void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 			while (bOk && (*P == ' ' || *P == '\t')) { ++P; }
 		}
 		FScopeLock L(&Lock);
-		if (!bOk || *P != 0)
+		FLink& K = Links[Index];
+		if (!bOk || *P != 0 || K.Role == ELinkRole::Ffb)
 		{
 			++BadLines;
 			return;
 		}
+		if (K.Role == ELinkRole::Probing)
+		{
+			if (FindLinkLocked(ELinkRole::Input) >= 0)
+			{
+				UE_LOG(LogWheel, Display, TEXT("wheel: %s sends samples too, but there already is an input board: ignored"), *K.Path);
+				SilentPorts.Add(K.Path);
+				K.bDrop = true;
+				return;
+			}
+			K.Role = ELinkRole::Input;
+			SampleCount = 0;
+			LastButtons = 0;
+			bEdgeUp = bEdgeDown = bEdgeStart = false;
+			UE_LOG(LogWheel, Display, TEXT("wheel: input board on %s"), *K.Path);
+		}
+		K.LastHeard = Now;
 		RawSteer = Steer;
 		RawThrottle = Throttle;
 		RawBrake = Brake;
 		RawHandbrake = Handbrake;
-		Buttons = FPlatformTime::Seconds() < TestUntil ? TestButtons : Btn;     // (cr.Wheel.Test)
+		Buttons = Now < TestUntil ? TestButtons : Btn;     // (cr.Wheel.Test)
 		// pedals calibrate themselves: remember the travel seen this session
 		CalThrottleMin = FMath::Min(CalThrottleMin, RawThrottle);
 		CalThrottleMax = FMath::Max(CalThrottleMax, RawThrottle);
@@ -516,7 +684,6 @@ void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 			CalHandbrakeMin = FMath::Min(CalHandbrakeMin, RawHandbrake);
 			CalHandbrakeMax = FMath::Max(CalHandbrakeMax, RawHandbrake);
 		}
-		const double Now = FPlatformTime::Seconds();
 		const int32 Rising = Buttons & ~LastButtons;
 		if (Rising & 1) { bEdgeUp = true; EdgeUpTime = Now; }
 		if (Rising & 2) { bEdgeDown = true; EdgeDownTime = Now; }
@@ -527,7 +694,44 @@ void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 	}
 	else if (Line[0] == 'I' && Line[1] == ' ')
 	{
-		UE_LOG(LogWheel, Display, TEXT("wheel: device says \"%s\""), UTF8_TO_TCHAR(Line));
+		FScopeLock L(&Lock);
+		UE_LOG(LogWheel, Display, TEXT("wheel: %s says \"%s\""), *Links[Index].Path, UTF8_TO_TCHAR(Line));
+		if (FCStringAnsi::Strstr(Line, "cambridge-ffb"))
+		{
+			BecomeFfbLocked();
+		}
+	}
+	else if (Line[0] == 'H' && (Line[1] == ' ' || Line[1] == '\t'))
+	{
+		// the force-feedback board's heartbeat: "H <flags> <milliamps>"
+		const char* P = Line + 1;
+		int32 Flags, Milliamps;
+		bool bOk = ParseField(P, 0, 255, Flags) && ParseField(P, 0, 100000, Milliamps);
+		while (bOk && (*P == ' ' || *P == '\t')) { ++P; }
+		FScopeLock L(&Lock);
+		if (!bOk || *P != 0 || Links[Index].Role == ELinkRole::Input)
+		{
+			++BadLines;
+			return;
+		}
+		if (!BecomeFfbLocked())
+		{
+			return;
+		}
+		Links[Index].LastHeard = Now;
+		FfbFlags = Flags;
+		FfbMilliamps = Milliamps;
+		if (Flags != LoggedFfbFlags)
+		{
+			LoggedFfbFlags = Flags;
+			UE_LOG(LogWheel, Display, TEXT("wheel: force-feedback board: %s%s%s%s"), (Flags & 1) ? TEXT("driving") : TEXT("limp"),
+				(Flags & 2) ? TEXT(", soft stops armed") : TEXT(", centre not found yet (turn the rim through it)"),
+				(Flags & 4) ? TEXT(", current guard backing off") : TEXT(""), (Flags & 8) ? TEXT(", overspeed brake") : TEXT(""));
+		}
+	}
+	else if (Line[0] == 'S' && (Line[1] == ' ' || Line[1] == 0))
+	{
+		// the force-feedback board's bench status line (only sent when asked, which the game never does)
 	}
 	else
 	{
@@ -536,98 +740,138 @@ void UCambridgeWheelSubsystem::ParseLine(const char* Line)
 	}
 }
 
+void UCambridgeWheelSubsystem::ReadLink(int32 Index)
+{
+#if CAMBRIDGE_WHEEL_POSIX
+	FLink& K = Links[Index];          // (the line buffer is this thread's alone, and only this thread changes Fd)
+	char Buf[512];
+	const ssize_t N = read(K.Fd, Buf, sizeof(Buf));
+	if (N <= 0)
+	{
+		if (N == 0 || (errno != EAGAIN && errno != EINTR))
+		{
+			CloseLink(Index, TEXT("read error"));
+			LastDiscovery = FPlatformTime::Seconds();
+		}
+		return;
+	}
+	for (ssize_t i = 0; i < N && !K.bDrop; ++i)
+	{
+		if (Buf[i] == '\n' || Buf[i] == '\r')
+		{
+			if (K.PendingLen > 0 && !K.bOverlong)
+			{
+				K.Pending[K.PendingLen] = 0;
+				ParseLine(Index, K.Pending);
+			}
+			K.PendingLen = 0;
+			K.bOverlong = false;
+		}
+		else if (K.PendingLen < MaxLineLength)
+		{
+			K.Pending[K.PendingLen++] = Buf[i];
+		}
+		else
+		{
+			K.bOverlong = true;     // dropped whole, not parsed truncated
+		}
+	}
+#endif
+}
+
 uint32 UCambridgeWheelSubsystem::Run()
 {
 #if CAMBRIDGE_WHEEL_POSIX
-	char Pending[MaxLine + 1];
-	int32 PendingLen = 0;
-	bool bOverlong = false;
-	auto Wait = [this](double Seconds)
-	{
-		for (double T = 0.0; T < Seconds && !bStopping; T += 0.05)
-		{
-			FPlatformProcess::Sleep(0.05f);
-		}
-	};
 	while (!bStopping)
 	{
-		int32 LocalFd, Samples;
+		const double Now = FPlatformTime::Seconds();
+		// 1. links to close: a failed write (unplugged) or a second board of a kind; a port never identified as one of the
+		// boards (another USB serial board); a force-feedback board whose heartbeat stopped. Probing ports are asked again
+		for (int32 i = 0; i < MaxLinks; ++i)
 		{
-			FScopeLock L(&Lock);
-			LocalFd = Fd;
-			Samples = SampleCount;
-		}
-		if (LocalFd < 0)
-		{
-			PendingLen = 0;            // a new connection starts on a fresh line
-			bOverlong = false;
-			if (!OpenPort())
-			{
-				Wait(ReconnectDelay);
-			}
-			continue;
-		}
-		// opened, but nothing that looks like the wheel: another USB serial board, or a stale port
-		if (Samples == 0 && PortOverride.IsEmpty() && FPlatformTime::Seconds() - OpenTime > NoDataTimeout)
-		{
-			FString Silent;
+			int32 LinkFd;
+			ELinkRole Role;
+			bool bDrop;
+			double OpenTime, LastAsk, LastHeard;
+			FString Path;
 			{
 				FScopeLock L(&Lock);
-				Silent = OpenPath;
+				const FLink& K = Links[i];
+				LinkFd = K.Fd; Role = K.Role; bDrop = K.bDrop; OpenTime = K.OpenTime; LastAsk = K.LastAsk; LastHeard = K.LastHeard; Path = K.Path;
 			}
-			UE_LOG(LogWheel, Display, TEXT("wheel: no samples from %s in %.0f s, trying another port"), *Silent, NoDataTimeout);
-			SilentPorts.Add(Silent);
-			bConfigPortFailed |= Silent == Port;
-			ClosePort();
-			Wait(ReconnectDelay);
-			continue;
-		}
-		pollfd P { LocalFd, POLLIN, 0 };
-		const int32 R = poll(&P, 1, 20);
-		if (R < 0 && errno == EINTR)
-		{
-			continue;
-		}
-		if (R < 0 || (P.revents & (POLLERR | POLLHUP | POLLNVAL)))
-		{
-			ClosePort();         // unplugged
-			Wait(ReconnectDelay);
-			continue;
-		}
-		if (R == 0)
-		{
-			continue;
-		}
-		char Buf[512];
-		const ssize_t N = read(LocalFd, Buf, sizeof(Buf));
-		if (N <= 0)
-		{
-			if (N == 0 || (errno != EAGAIN && errno != EINTR))
+			if (LinkFd < 0)
 			{
-				ClosePort();
-				Wait(ReconnectDelay);
+				continue;
 			}
-			continue;
-		}
-		for (ssize_t i = 0; i < N; ++i)
-		{
-			if (Buf[i] == '\n' || Buf[i] == '\r')
+			if (bDrop)
 			{
-				if (PendingLen > 0 && !bOverlong)
+				CloseLink(i, TEXT("dropped"));
+				LastDiscovery = Now;
+			}
+			else if (Role == ELinkRole::Probing && PortOverrides.IsEmpty() && Now - OpenTime > NoDataTimeout)
+			{
+				UE_LOG(LogWheel, Display, TEXT("wheel: nothing from %s in %.0f s that looks like the wheel, trying another port"), *Path, NoDataTimeout);
+				SilentPorts.Add(Path);
+				bConfigPortFailed |= Path == Port;
+				CloseLink(i, TEXT("not a wheel board"));
+			}
+			else if (Role == ELinkRole::Probing && Now - LastAsk >= AskInterval)
+			{
+				FScopeLock L(&Lock);
+				Links[i].LastAsk = Now;
+				WriteLinkLocked(i, "?\n", 2);
+			}
+			else if (Role == ELinkRole::Ffb && Now - LastHeard > FfbSilentTimeout)
+			{
+				CloseLink(i, TEXT("no heartbeat"));
+				LastDiscovery = Now;
+			}
+		}
+		// 2. look for the boards still missing (hot-plug)
+		if (Now - LastDiscovery >= ReconnectDelay)
+		{
+			LastDiscovery = Now;
+			DiscoverPorts();
+		}
+		// 3. read whatever came in
+		pollfd P[MaxLinks];
+		int32 Index[MaxLinks];
+		int32 Num = 0;
+		{
+			FScopeLock L(&Lock);
+			for (int32 i = 0; i < MaxLinks; ++i)
+			{
+				if (Links[i].Fd >= 0)
 				{
-					Pending[PendingLen] = 0;
-					ParseLine(Pending);
+					P[Num] = { Links[i].Fd, POLLIN, 0 };
+					Index[Num++] = i;
 				}
-				PendingLen = 0;
-				bOverlong = false;
 			}
-			else if (PendingLen < MaxLine)
+		}
+		if (Num == 0)
+		{
+			FPlatformProcess::Sleep(0.05f);
+			continue;
+		}
+		const int32 R = poll(P, Num, 20);
+		if (R < 0)
+		{
+			if (errno != EINTR)
 			{
-				Pending[PendingLen++] = Buf[i];
+				FPlatformProcess::Sleep(0.02f);
 			}
-			else
+			continue;
+		}
+		for (int32 k = 0; k < Num && R > 0; ++k)
+		{
+			if (P[k].revents & (POLLERR | POLLHUP | POLLNVAL))
 			{
-				bOverlong = true;     // dropped whole, not parsed truncated
+				CloseLink(Index[k], TEXT("unplugged"));
+				LastDiscovery = FPlatformTime::Seconds();
+			}
+			else if (P[k].revents & POLLIN)
+			{
+				ReadLink(Index[k]);
 			}
 		}
 	}

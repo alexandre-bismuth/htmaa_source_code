@@ -171,7 +171,7 @@ namespace
 			FSettingRow Status{ LOCTEXT("Wheel", "Wheel"), { FText::GetEmpty() }, [] { return 0; }, [](int32) {} };
 			Status.Display = [W] { return FText::FromString(W->GetStatusText()); };
 			Rows.Add(Status);
-			static const int32 Ranges[] = { 360, 450, 540, 720, 900 };
+			static const int32 Ranges[] = { 330, 360, 450, 540, 720, 900 };   // (330: the force-feedback base, soft stops at +-165 deg)
 			TArray<FText> RangeNames;
 			for (int32 R : Ranges) { RangeNames.Add(FText::FromString(FString::Printf(TEXT("%d deg"), R))); }
 			Rows.Add({ LOCTEXT("WheelRange", "Wheel rotation"), RangeNames,

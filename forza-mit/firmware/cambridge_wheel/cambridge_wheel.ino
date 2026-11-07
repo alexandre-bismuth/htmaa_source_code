@@ -1,53 +1,56 @@
-// Reference firmware for the CambridgeRacer wheel (protocol: docs/wheel_protocol.md).
-// Arduino API; any board with native USB serial (RP2040, SAMD21/51, ESP32-S2/S3, Teensy).
-// Hardware assumed (change the pins / sensors to match the build):
-//   steering : quadrature encoder on the rim shaft (or motor shaft, see STEER_GEAR)
-//   pedals   : two analog sensors (potentiometer / hall), 0..3.3 V
-//   paddles  : two buttons to GND (internal pull-ups)
-//   handbrake: a potentiometer like the pedals (optional: PIN_HANDBRAKE = -1 without one)
-//   motor    : DC motor on an H-bridge with PWM + DIR inputs (e.g. BTS7960: RPWM/LPWM)
+// INPUT board firmware for the CambridgeRacer wheel (protocol: docs/wheel_protocol.md): steering, pedals, handbrake and
+// paddles -> "W" lines at 500 Hz. The force feedback is the OUTPUT board's job (firmware/cambridge_ffb): this board
+// never drives a motor and ignores "F" lines.
+// Board: car_inputs v6, Seeed XIAO RP2040 (Arduino IDE, Earle Philhower RP2040 core).
+//   steering : MT6701 magnetic encoder in ABZ mode, 1:1 on the steering rod: 1024 PPR = 4096 counts per turn with 4x
+//              decoding. A and B on J1 (4.99k pull-ups on the board); Z is not wired here (only the output board has it)
+//   pedals   : two analog sensors, 0..3.3 V (J2 throttle, J3 brake)
+//   handbrake: a potentiometer like the pedals (J4; PIN_HANDBRAKE = -1 without one)
+//   paddles  : two buttons to GND (J5, J6; 4.99k pull-ups on the board)
+// Straight ahead is wherever the rim sits at power-up (no Z pulse on this board). The game can recentre on top of
+// that (Esc > Centre wheel).
+// TODO (with the paddles, on the cast rim): both paddles held 2 s with the wheel straight = recentre (encCount = 0).
 
 #include <Arduino.h>
+#include <hardware/gpio.h>
 
-// ---- pins: the car_inputs board (Seeed XIAO RP2040) ------------------------------------------------
-const int PIN_ENC_A = D6, PIN_ENC_B = D5;                          // J1 steering wheel (swap if right turns read negative)
+// ---- pins: the car_inputs board ------------------------------------------------------------------------------------
+const int PIN_ENC_A = D6, PIN_ENC_B = D5;                          // J1 (GPIO0, GPIO7). Swap them if right turns read negative
 const int PIN_THROTTLE = A0, PIN_BRAKE = A1, PIN_HANDBRAKE = A2;   // J2, J3, J4
-const int PIN_UPSHIFT = D3, PIN_DOWNSHIFT = D4;                    // J5, J6 (4.99k pull-ups on the board; no start button)
-const int PIN_MOTOR_RPWM = D9, PIN_MOTOR_LPWM = D10;   // one PWM per direction (BTS7960 style); not on the board (D7-D10 are free)
+const int PIN_UPSHIFT = D3, PIN_DOWNSHIFT = D4;                    // J5, J6 (no start button)
 
-// ---- calibration constants ---------------------------------------------------------------------
-const float ENC_COUNTS_PER_REV = 2400.0f;   // encoder counts per revolution of its shaft (4x decoding)
-const float STEER_GEAR = 1.0f;              // shaft turns per rim turn (e.g. 5.0 if on the motor through 5:1)
-const float MAX_PWM = 255.0f;               // analogWrite range (set analogWriteResolution for more)
-// REMINDER: the game updates the torque only ~50-60 times a second (once per frame). Smooth it here
-// (this low-pass, or interpolate across frames) and run the motor loop + damping at >= 1 kHz, so the
-// rim gets a continuous force instead of 50-60 Hz steps.
-const float FFB_TAU_MS = 3.0f;              // smoothing of the game's torque command
-// Firmware-side rim damping, in torque (fraction of max) per centidegree/s of rim speed. 1e-5 gives 0.36 of
-// max torque at one rim turn per second. Start low and raise it until the rim stops oscillating: too much
-// makes the rim feel locked (0.0008, the old value, saturated the motor at 10 deg/s).
-const float DAMPING = 0.00001f;
-const float VEL_TAU_MS = 5.0f;              // low-pass of the rim speed (one encoder count is 15 centideg)
-const unsigned long FFB_TIMEOUT_MS = 100;   // no "F" for this long -> motor off (safety)
-const unsigned long SAMPLE_US = 2000;       // 500 Hz input reports
-const unsigned long MOTOR_US = 1000;        // 1 kHz force / damping loop
+// ---- calibration constants -----------------------------------------------------------------------------------------
+const long ENC_COUNTS_PER_REV = 4096;   // MT6701 at 1024 PPR, 4x decoding
+const long STEER_GEAR = 1;              // rod turns per rim turn: the sensor is on the steering rod itself
+const unsigned long SAMPLE_US = 2000;   // 500 Hz input reports
 
-volatile long encCount = 0;
-void encISR() {
-  // full quadrature decoding on both channels
-  static uint8_t prev = 0;
-  uint8_t cur = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
-  static const int8_t table[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
-  encCount += table[(prev << 2) | cur];
-  prev = cur;
+volatile long encCount = 0;             // + = clockwise (A leading B: the MT6701 turning clockwise)
+volatile uint8_t encPrev = 0;
+
+uint8_t encState() {
+  const uint32_t in = gpio_get_all();   // A and B read in the same instant
+  return (((in >> PIN_ENC_A) & 1u) << 1) | ((in >> PIN_ENC_B) & 1u);
 }
 
-float targetTorque = 0.0f, torque = 0.0f;   // -1..1, + = clockwise
-float steerRate = 0.0f;                     // filtered rim speed, centideg/s
-unsigned long lastFfbMs = 0, lastSampleUs = 0, lastLoopUs = 0;
-long lastSteer = 0;
+void encISR() {
+  // full quadrature decoding on both edges of A and B
+  static const int8_t table[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
+  const uint8_t cur = encState();
+  encCount += table[(encPrev << 2) | cur];
+  encPrev = cur;
+}
+
+// rim angle in centidegrees: counts x 36000 / 4096 (8.79 centideg per count), rounded
+long steerCentideg(long count) {
+  const int64_t num = (int64_t)count * 36000;
+  const int64_t den = (int64_t)ENC_COUNTS_PER_REV * STEER_GEAR;
+  return (long)((num + (num >= 0 ? den / 2 : -den / 2)) / den);
+}
+
+unsigned long lastSampleUs = 0;
 char line[48];
 int lineLen = 0;
+bool lineOverlong = false;
 
 uint8_t debounced(int pin, uint8_t bit, uint8_t prevState) {
   static unsigned long changedAt[3] = {0, 0, 0};
@@ -60,67 +63,47 @@ uint8_t debounced(int pin, uint8_t bit, uint8_t prevState) {
   return was ? bit : 0;
 }
 
-void setMotor(float t) {
-  t = constrain(t, -1.0f, 1.0f);
-  int pwm = (int)(fabsf(t) * MAX_PWM);
-  analogWrite(PIN_MOTOR_RPWM, t > 0 ? pwm : 0);   // swap the two pins if + turns the rim the wrong way
-  analogWrite(PIN_MOTOR_LPWM, t < 0 ? pwm : 0);
-}
-
 void handleLine(const char* s) {
-  if (s[0] == 'F' && s[1] == ' ') {
-    targetTorque = constrain(atoi(s + 2), -1000, 1000) / 1000.0f;
-    lastFfbMs = millis();
-  } else if (s[0] == '?') {
+  if (strcmp(s, "?") == 0) {
     Serial.println("I cambridge-wheel 1");
   }
+  // anything else, the game's "F <torque>" lines included, is ignored: the output board does the force feedback
 }
 
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_ENC_A, INPUT_PULLUP);
-  pinMode(PIN_ENC_B, INPUT_PULLUP);
+  pinMode(PIN_ENC_A, INPUT);            // the MT6701 drives A / B push-pull; the board has the pull-ups
+  pinMode(PIN_ENC_B, INPUT);
   pinMode(PIN_UPSHIFT, INPUT_PULLUP);
   pinMode(PIN_DOWNSHIFT, INPUT_PULLUP);
-  pinMode(PIN_MOTOR_RPWM, OUTPUT);
-  pinMode(PIN_MOTOR_LPWM, OUTPUT);
+  analogReadResolution(12);             // 0..4095
+  delay(50);                            // the MT6701 holds its ABZ outputs for 16 ms after power-up
+  encPrev = encState();
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), encISR, CHANGE);
-  analogReadResolution(12);   // 0..4095 (remove on boards without it)
-  setMotor(0);
 }
 
 void loop() {
-  // 1. commands from the game
+  // 1. lines from the game ("?"; F lines are dropped)
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
-      if (lineLen) { line[lineLen] = 0; handleLine(line); lineLen = 0; }
+      if (lineLen && !lineOverlong) { line[lineLen] = 0; handleLine(line); }
+      lineLen = 0;
+      lineOverlong = false;
     } else if (lineLen < (int)sizeof(line) - 1) {
       line[lineLen++] = c;
+    } else {
+      lineOverlong = true;              // dropped whole, never parsed truncated
     }
   }
 
-  // 2. force feedback at a fixed 1 kHz: smooth the command, add damping, watchdog. (Not every loop():
-  // a rim speed taken over a few microseconds is one encoder count / dt = huge spikes -> motor chatter.)
+  // 2. input report at 500 Hz
   unsigned long nowUs = micros();
-  noInterrupts(); long count = encCount; interrupts();
-  long steer = (long)(count * 36000.0f / (ENC_COUNTS_PER_REV * STEER_GEAR));   // centidegrees
-  if (nowUs - lastLoopUs >= MOTOR_US) {
-    float dt = (nowUs - lastLoopUs) * 1e-6f;
-    lastLoopUs = nowUs;
-    float rawRate = (steer - lastSteer) / dt;                                       // centideg/s
-    lastSteer = steer;
-    steerRate += dt * 1000.0f / (VEL_TAU_MS + dt * 1000.0f) * (rawRate - steerRate);
-    if (millis() - lastFfbMs > FFB_TIMEOUT_MS) targetTorque = 0;                  // game gone -> limp
-    float a = dt * 1000.0f / (FFB_TAU_MS + dt * 1000.0f);
-    torque += a * (targetTorque - torque);
-    setMotor(torque - DAMPING * steerRate);
-  }
-
-  // 3. input report at 500 Hz
   if (nowUs - lastSampleUs >= SAMPLE_US) {
     lastSampleUs = nowUs;
+    noInterrupts(); long count = encCount; interrupts();
+    long steer = steerCentideg(count);
     static uint8_t buttons = 0;
     buttons = debounced(PIN_UPSHIFT, 1, buttons) | debounced(PIN_DOWNSHIFT, 2, buttons);
     char out[48];
@@ -128,8 +111,7 @@ void loop() {
       ? snprintf(out, sizeof(out), "W %ld %d %d %u\n", steer, analogRead(PIN_THROTTLE), analogRead(PIN_BRAKE), buttons)
       : snprintf(out, sizeof(out), "W %ld %d %d %u %d\n", steer, analogRead(PIN_THROTTLE), analogRead(PIN_BRAKE), buttons,
                  analogRead(PIN_HANDBRAKE));
-    // never block here (game closed, host not reading): a blocked loop would also stop the FFB watchdog
-    // above and leave the motor at its last torque. Drop the sample instead.
+    // never block here (game closed, host not reading): drop the sample instead
     if (Serial.availableForWrite() >= len) Serial.write(out, len);
   }
 }
